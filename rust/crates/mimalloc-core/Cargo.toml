@@ -1,0 +1,12 @@
+[package]
+name = "mimalloc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "no_std mimalloc-inspired allocator core"
+
+[dependencies]
+libc.workspace = true
+
+[lib]
+name = "mimalloc_core"

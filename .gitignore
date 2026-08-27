@@ -11,3 +11,8 @@ docs/
 *.gz
 .vscode
 .DS_STore
+rust/target
+/target
+.direnv
+result
+result-*
