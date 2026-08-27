@@ -65,17 +65,18 @@ pub fn init() {
 pub use alloc::{
     aligned_alloc, calloc, collect, free, good_size, malloc, malloc_aligned, malloc_aligned_at,
     manage_os_memory_ex, memalign, posix_memalign, pvalloc, realloc, reallocarr, reallocarray,
-    reallocf, realpath, reserve_os_memory, reserve_os_memory_ex, rezalloc, rezalloc_aligned, strdup,
-    strndup, ufree, umalloc, urealloc, usable_size, valloc, VERSION,
+    reallocf, realpath, reserve_os_memory, reserve_os_memory_ex, rezalloc, rezalloc_aligned,
+    rezalloc_aligned_at, strdup, strndup, ufree, umalloc, urealloc, usable_size, valloc, VERSION,
 };
 pub use arena::{self as mi_arena, Arena};
 pub use heap::{
     any_heap_contains, heap_collect, heap_contains, heap_delete, heap_destroy, heap_main,
-    heap_malloc, heap_malloc_aligned, heap_new, heap_new_in_arena, heap_of, heap_theap,
-    heap_visit_abandoned_blocks, heap_visit_blocks, theap_collect, theap_get_default, theap_malloc,
-    theap_malloc_aligned, theap_set_default, theap_visit_blocks, BlockVisitFun, Heap, HeapArea,
-    Theap,
+    heap_malloc, heap_malloc_aligned, heap_malloc_aligned_at, heap_new, heap_new_in_arena, heap_of,
+    heap_theap, heap_visit_abandoned_blocks, heap_visit_blocks, theap_collect, theap_get_default,
+    theap_malloc, theap_malloc_aligned, theap_malloc_aligned_at, theap_set_default,
+    theap_visit_blocks, BlockVisitFun, Heap, HeapArea, Theap,
 };
+pub use tls::thread_done;
 pub use subproc::{self as mi_subproc, Subproc, SubprocId};
 pub use options as mi_options;
 pub use stats::{self as mi_stats, Stats};
@@ -373,6 +374,27 @@ mod tests {
             ));
             assert_eq!(n, 5);
             crate::heap_destroy(h);
+        }
+    }
+
+    #[test]
+    fn heap_aligned_at_and_recalloc() {
+        unsafe {
+            let h = crate::heap_new();
+            let p = crate::heap_malloc_aligned_at(h, 48, 32, 8);
+            assert!(!p.is_null());
+            assert_eq!((p as usize + 8) % 32, 0);
+            crate::heap_destroy(h);
+            let z = alloc::malloc_aligned(64, 32);
+            assert!(!z.is_null());
+            core::ptr::write_bytes(z, 0, 64);
+            let q = alloc::rezalloc_aligned(z, 192, 32);
+            assert!(!q.is_null());
+            assert_eq!(q as usize % 32, 0);
+            for i in 0..192 {
+                assert_eq!(*q.add(i), 0);
+            }
+            alloc::free(q);
         }
     }
 

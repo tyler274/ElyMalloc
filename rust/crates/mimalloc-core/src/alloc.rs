@@ -366,6 +366,38 @@ pub unsafe fn rezalloc_aligned(p: *mut u8, newsize: usize, align: usize) -> *mut
     q
 }
 
+pub unsafe fn rezalloc_aligned_at(
+    p: *mut u8,
+    newsize: usize,
+    align: usize,
+    offset: usize,
+) -> *mut u8 {
+    if p.is_null() {
+        let q = malloc_aligned_at(newsize, align, offset);
+        if !q.is_null() {
+            ptr::write_bytes(q, 0, newsize);
+        }
+        return q;
+    }
+    let old = usable_size(p as *const u8);
+    let aligned_ok = if offset % align == 0 {
+        (p as usize) % align == 0
+    } else {
+        (p as usize).wrapping_add(offset) % align == 0
+    };
+    if old >= newsize && aligned_ok {
+        return p;
+    }
+    let q = malloc_aligned_at(newsize, align, offset);
+    if q.is_null() {
+        return ptr::null_mut();
+    }
+    ptr::write_bytes(q, 0, newsize);
+    ptr::copy_nonoverlapping(p, q, old.min(newsize));
+    free(p);
+    q
+}
+
 pub unsafe fn umalloc(size: usize, block_size: *mut usize) -> *mut u8 {
     let p = malloc(size);
     if !block_size.is_null() {

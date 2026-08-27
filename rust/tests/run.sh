@@ -32,4 +32,13 @@ LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp
 cc -O2 -pthread -DNDEBUG -I"$REPO/include" "$ROOT/tests/theap.c" "$SO" -o /tmp/mi-theap
 LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp/mi-theap
 
+cc -O2 -pthread -DNDEBUG -I"$REPO/include" "$REPO/test/test-api-fill.c" "$SO" -o /tmp/mi-api-fill
+LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp/mi-api-fill
+
+cc -O2 -pthread -DNDEBUG -I"$REPO/include" "$REPO/test/test-stress-heaps.c" "$SO" -o /tmp/mi-stress-heaps
+LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp/mi-stress-heaps 4 10 3
+
+cc -O2 -pthread -DNDEBUG -I"$REPO/include" "$REPO/test/test-stress-subprocs.c" "$SO" -o /tmp/mi-stress-subprocs
+LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp/mi-stress-subprocs 4 10 3
+
 echo "all rust mimalloc checks passed"

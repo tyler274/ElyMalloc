@@ -627,6 +627,43 @@ pub unsafe fn heap_malloc_aligned(h: *mut Heap, size: usize, align: usize) -> *m
     theap_malloc_aligned((*h).inner, size, align)
 }
 
+pub unsafe fn theap_malloc_aligned_at(
+    th: *mut ThreadHeap,
+    size: usize,
+    align: usize,
+    offset: usize,
+) -> *mut u8 {
+    if th.is_null() {
+        os::enomem();
+        return ptr::null_mut();
+    }
+    if align == 0 || !align.is_power_of_two() {
+        os::einval();
+        return ptr::null_mut();
+    }
+    if offset % align == 0 {
+        return theap_malloc_aligned(th, size, align);
+    }
+    malloc_huge_at(th, size.max(1), align, offset)
+}
+
+pub unsafe fn heap_malloc_aligned_at(
+    h: *mut Heap,
+    size: usize,
+    align: usize,
+    offset: usize,
+) -> *mut u8 {
+    if !heap_is_ok(h) {
+        os::enomem();
+        return ptr::null_mut();
+    }
+    if (*h).is_main {
+        return theap_malloc_aligned_at(crate::tls::thread_heap(), size, align, offset);
+    }
+    let _g = (*h).lock.lock();
+    theap_malloc_aligned_at((*h).inner, size, align, offset)
+}
+
 pub unsafe fn heap_collect(h: *mut Heap, force: bool) {
     if !heap_is_ok(h) {
         return;

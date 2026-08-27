@@ -130,3 +130,7 @@ pub fn reset() {
     PAGES_TOTAL.store(0, Ordering::Relaxed);
     PAGES_PEAK.store(0, Ordering::Relaxed);
 }
+
+pub fn get_bin_size(bin: usize) -> usize {
+    crate::bin::bin_size(bin)
+}

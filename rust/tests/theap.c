@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "mimalloc.h"
+#include "mimalloc-stats.h"
 
 static void die(const char* msg) {
   fprintf(stderr, "theap test failed: %s\n", msg);
@@ -99,6 +100,36 @@ int main(void) {
     if (nheaps < 1) die("subproc heaps");
     mi_heap_destroy(hs);
     mi_subproc_destroy(sp);
+  }
+
+  {
+    mi_heap_t* ha = mi_heap_new();
+    void* a = mi_heap_malloc_aligned_at(ha, 48, 32, 8);
+    if (a == NULL || (((uintptr_t)a + 8) % 32) != 0) die("heap_malloc_aligned_at");
+    char* d = mi_heap_strndup(ha, "hello world", 5);
+    if (d == NULL || d[0] != 'h' || d[5] != 0) die("heap_strndup");
+    void* z = mi_heap_calloc_aligned(ha, 4, 16, 32);
+    if (z == NULL || ((uintptr_t)z % 32) != 0) die("heap_calloc_aligned");
+    for (int i = 0; i < 64; i++) {
+      if (((uint8_t*)z)[i] != 0) die("heap_calloc_aligned zero");
+    }
+    z = mi_heap_recalloc_aligned(ha, z, 8, 16, 32);
+    if (z == NULL || ((uintptr_t)z % 32) != 0) die("heap_recalloc_aligned");
+    mi_heap_destroy(ha);
+
+    uint8_t* p = (uint8_t*)mi_calloc_aligned(32, 1, 32);
+    if (p == NULL) die("calloc_aligned");
+    p = (uint8_t*)mi_recalloc_aligned(p, 96, 1, 32);
+    if (p == NULL) die("recalloc_aligned");
+    for (int i = 0; i < 96; i++) {
+      if (p[i] != 0) die("recalloc_aligned zero");
+    }
+    mi_free(p);
+
+    char jbuf[256];
+    if (mi_stats_get_json(sizeof(jbuf), jbuf) == NULL) die("stats_get_json");
+    if (jbuf[0] != '{') die("stats json");
+    if (mi_stats_get_bin_size(1) < sizeof(void*)) die("stats_get_bin_size");
   }
 
   if (mi_heap_main() == NULL) die("heap_main");

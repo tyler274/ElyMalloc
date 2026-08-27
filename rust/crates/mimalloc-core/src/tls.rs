@@ -100,6 +100,27 @@ pub unsafe fn force_unlock() {
     KEY_LOCK.force_unlock();
 }
 
+/// Explicit `mi_thread_done`: abandon this thread's heap and clear TLS so the
+/// pthread key destructor does not double-free it.
+pub unsafe fn thread_done() {
+    let k = KEY.load(Ordering::Acquire);
+    if k == KEY_UNSET {
+        return;
+    }
+    let key = k as libc::pthread_key_t;
+    let h = libc::pthread_getspecific(key) as *mut ThreadHeap;
+    libc::pthread_setspecific(key, ptr::null());
+    let dk = DEFAULT_KEY.load(Ordering::Acquire);
+    if dk != KEY_UNSET {
+        let dkey = dk as libc::pthread_key_t;
+        let d = libc::pthread_getspecific(dkey) as *mut ThreadHeap;
+        if d == h {
+            libc::pthread_setspecific(dkey, ptr::null());
+        }
+    }
+    heap::abandon(h);
+}
+
 unsafe extern "C" fn atfork_prepare() {}
 
 unsafe extern "C" fn atfork_parent() {}

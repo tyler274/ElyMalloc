@@ -193,7 +193,9 @@ pub unsafe extern "C" fn mi_thread_init() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_thread_done() {}
+pub unsafe extern "C" fn mi_thread_done() {
+    mimalloc_core::thread_done();
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_cfree(p: *mut c_void) -> bool {
@@ -347,6 +349,43 @@ pub unsafe extern "C" fn mi_rezalloc_aligned(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mi_rezalloc_aligned_at(
+    p: *mut c_void,
+    newsize: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    pvoid(mi::rezalloc_aligned_at(pu8(p), newsize, alignment, offset))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_recalloc_aligned(
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+    alignment: usize,
+) -> *mut c_void {
+    let Some(total) = newcount.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_rezalloc_aligned(p, total, alignment)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_recalloc_aligned_at(
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    let Some(total) = newcount.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_rezalloc_aligned_at(p, total, alignment, offset)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mi_umalloc(size: usize, block_size: *mut usize) -> *mut c_void {
     pvoid(mi::umalloc(size, block_size))
 }
@@ -451,6 +490,18 @@ pub unsafe extern "C" fn mi_heap_malloc_aligned(
     alignment: usize,
 ) -> *mut c_void {
     pvoid(mimalloc_core::heap_malloc_aligned(heap, size, alignment))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_malloc_aligned_at(
+    heap: *mut mimalloc_core::Heap,
+    size: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    pvoid(mimalloc_core::heap_malloc_aligned_at(
+        heap, size, alignment, offset,
+    ))
 }
 
 #[no_mangle]
@@ -1027,6 +1078,45 @@ pub unsafe extern "C" fn mi_heap_strdup(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mi_heap_strndup(
+    heap: *mut mimalloc_core::Heap,
+    s: *const libc::c_char,
+    n: usize,
+) -> *mut libc::c_char {
+    if s.is_null() {
+        return core::ptr::null_mut();
+    }
+    let mut len = 0usize;
+    while len < n && *s.add(len) != 0 {
+        len += 1;
+    }
+    let d = mimalloc_core::heap_malloc(heap, len + 1) as *mut libc::c_char;
+    if !d.is_null() {
+        core::ptr::copy_nonoverlapping(s, d, len);
+        *d.add(len) = 0;
+    }
+    d
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_realpath(
+    heap: *mut mimalloc_core::Heap,
+    fname: *const libc::c_char,
+    resolved_name: *mut libc::c_char,
+) -> *mut libc::c_char {
+    if !resolved_name.is_null() {
+        return libc::realpath(fname, resolved_name);
+    }
+    const PATH_MAX: usize = 4096;
+    let mut buf = [0i8; PATH_MAX];
+    let r = libc::realpath(fname, buf.as_mut_ptr());
+    if r.is_null() {
+        return core::ptr::null_mut();
+    }
+    mi_heap_strdup(heap, buf.as_ptr())
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mi_heap_reallocn(
     heap: *mut mimalloc_core::Heap,
     p: *mut c_void,
@@ -1080,6 +1170,157 @@ pub unsafe extern "C" fn mi_heap_rezalloc(
         core::ptr::write_bytes((q as *mut u8).add(old), 0, newsize - old);
     }
     q
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_zalloc_aligned_at(
+    heap: *mut mimalloc_core::Heap,
+    size: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    let p = mimalloc_core::heap_malloc_aligned_at(heap, size, alignment, offset);
+    if !p.is_null() {
+        core::ptr::write_bytes(p, 0, size);
+    }
+    pvoid(p)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_calloc_aligned(
+    heap: *mut mimalloc_core::Heap,
+    count: usize,
+    size: usize,
+    alignment: usize,
+) -> *mut c_void {
+    let Some(total) = count.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_heap_zalloc_aligned(heap, total, alignment)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_calloc_aligned_at(
+    heap: *mut mimalloc_core::Heap,
+    count: usize,
+    size: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    let Some(total) = count.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_heap_zalloc_aligned_at(heap, total, alignment, offset)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_realloc_aligned(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newsize: usize,
+    alignment: usize,
+) -> *mut c_void {
+    mi_heap_realloc_aligned_at(heap, p, newsize, alignment, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_realloc_aligned_at(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newsize: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    if p.is_null() {
+        return mi_heap_malloc_aligned_at(heap, newsize, alignment, offset);
+    }
+    let old = mi::usable_size(p as *const u8);
+    let aligned_ok = if offset % alignment == 0 {
+        (p as usize) % alignment == 0
+    } else {
+        (p as usize).wrapping_add(offset) % alignment == 0
+    };
+    if old >= newsize && aligned_ok {
+        return p;
+    }
+    let q = mimalloc_core::heap_malloc_aligned_at(heap, newsize, alignment, offset);
+    if q.is_null() {
+        return core::ptr::null_mut();
+    }
+    core::ptr::copy_nonoverlapping(p as *const u8, q, old.min(newsize));
+    mi::free(pu8(p));
+    pvoid(q)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_recalloc(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+) -> *mut c_void {
+    let Some(total) = newcount.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_heap_rezalloc(heap, p, total)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_rezalloc_aligned(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newsize: usize,
+    alignment: usize,
+) -> *mut c_void {
+    mi_heap_rezalloc_aligned_at(heap, p, newsize, alignment, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_rezalloc_aligned_at(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newsize: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    if p.is_null() {
+        return mi_heap_zalloc_aligned_at(heap, newsize, alignment, offset);
+    }
+    let old = mi::usable_size(p as *const u8);
+    let q = mi_heap_realloc_aligned_at(heap, p, newsize, alignment, offset);
+    if !q.is_null() && newsize > old {
+        core::ptr::write_bytes((q as *mut u8).add(old), 0, newsize - old);
+    }
+    q
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_recalloc_aligned(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+    alignment: usize,
+) -> *mut c_void {
+    let Some(total) = newcount.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_heap_rezalloc_aligned(heap, p, total, alignment)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_recalloc_aligned_at(
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    let Some(total) = newcount.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    mi_heap_rezalloc_aligned_at(heap, p, total, alignment, offset)
 }
 
 #[no_mangle]
@@ -1228,6 +1469,301 @@ pub unsafe extern "C" fn mi_arena_min_size() -> usize {
 #[no_mangle]
 pub unsafe extern "C" fn mi_is_in_heap_region(p: *const c_void) -> bool {
     mi::usable_size(p as *const u8) != 0 || p.is_null()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_option_set_enabled_default(option: i32, enable: bool) {
+    mi_option_set_enabled(option, enable);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi__expand(p: *mut c_void, newsize: usize) -> *mut c_void {
+    let q = mi_expand(p, newsize);
+    if q.is_null() {
+        *libc::__errno_location() = libc::ENOMEM;
+    }
+    q
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_aligned_recalloc(
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+    alignment: usize,
+) -> *mut c_void {
+    mi_recalloc_aligned(p, newcount, size, alignment)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_aligned_offset_recalloc(
+    p: *mut c_void,
+    newcount: usize,
+    size: usize,
+    alignment: usize,
+    offset: usize,
+) -> *mut c_void {
+    mi_recalloc_aligned_at(p, newcount, size, alignment, offset)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_free_size_aligned(p: *mut c_void, _size: usize, _alignment: usize) {
+    mi_free(p);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_mbsdup(s: *const u8) -> *mut u8 {
+    mi_strdup(s as *const libc::c_char) as *mut u8
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_wcsdup(s: *const libc::wchar_t) -> *mut libc::wchar_t {
+    if s.is_null() {
+        return core::ptr::null_mut();
+    }
+    let mut n = 0usize;
+    while *s.add(n) != 0 {
+        n += 1;
+    }
+    let bytes = (n + 1).saturating_mul(core::mem::size_of::<libc::wchar_t>());
+    let p = mi::malloc(bytes) as *mut libc::wchar_t;
+    if !p.is_null() {
+        core::ptr::copy_nonoverlapping(s, p, n + 1);
+    }
+    p
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_dupenv_s(
+    buf: *mut *mut libc::c_char,
+    size: *mut usize,
+    name: *const libc::c_char,
+) -> i32 {
+    if !size.is_null() {
+        *size = 0;
+    }
+    if buf.is_null() || name.is_null() {
+        return libc::EINVAL;
+    }
+    let p = libc::getenv(name);
+    if p.is_null() {
+        *buf = core::ptr::null_mut();
+        return 0;
+    }
+    *buf = mi_strdup(p);
+    if (*buf).is_null() {
+        return libc::ENOMEM;
+    }
+    if !size.is_null() {
+        *size = libc::strlen(p) + 1;
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_wdupenv_s(
+    buf: *mut *mut libc::wchar_t,
+    size: *mut usize,
+    name: *const libc::wchar_t,
+) -> i32 {
+    if !size.is_null() {
+        *size = 0;
+    }
+    if buf.is_null() || name.is_null() {
+        return libc::EINVAL;
+    }
+    *buf = core::ptr::null_mut();
+    libc::EINVAL
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_manage_memory(
+    start: *mut c_void,
+    size: usize,
+    is_committed: bool,
+    is_pinned: bool,
+    is_zero: bool,
+    numa_node: i32,
+    exclusive: bool,
+    _commit_fun: *mut c_void,
+    _commit_fun_arg: *mut c_void,
+    arena_id: *mut *mut c_void,
+) -> bool {
+    mi_manage_os_memory_ex(
+        start,
+        size,
+        is_committed,
+        is_pinned,
+        is_zero,
+        numa_node,
+        exclusive,
+        arena_id,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_unsafe_heap_page_is_under_utilized(
+    _heap: *mut mimalloc_core::Heap,
+    _p: *mut c_void,
+    _perc_threshold: usize,
+) -> bool {
+    false
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_stats_merge() {}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_thread_stats_print_out(_out: *mut c_void, _arg: *mut c_void) {}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_stats_merge_to_subproc(_heap: *mut mimalloc_core::Heap) {}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_stats_get_bin_size(bin: usize) -> usize {
+    mimalloc_core::mi_stats::get_bin_size(bin)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_stats_get(
+    _heap: *mut mimalloc_core::Heap,
+    stats: *mut mimalloc_core::Stats,
+) -> bool {
+    mi_stats_get(stats)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_theap_stats_get(
+    _theap: *mut mimalloc_core::Theap,
+    stats: *mut mimalloc_core::Stats,
+) -> bool {
+    mi_stats_get(stats)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_subproc_stats_get(
+    _subproc: mimalloc_core::SubprocId,
+    stats: *mut mimalloc_core::Stats,
+) -> bool {
+    mi_stats_get(stats)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_subproc_stats_get_exclusive(
+    subproc: mimalloc_core::SubprocId,
+    stats: *mut mimalloc_core::Stats,
+) -> bool {
+    mi_subproc_stats_get(subproc, stats)
+}
+
+unsafe fn stats_as_json(
+    stats: *mut mimalloc_core::Stats,
+    buf_size: usize,
+    buf: *mut libc::c_char,
+) -> *mut libc::c_char {
+    if stats.is_null() {
+        return core::ptr::null_mut();
+    }
+    let mut tmp = [0i8; 256];
+    let n = libc::snprintf(
+        tmp.as_mut_ptr(),
+        tmp.len(),
+        b"{\"stat_version\":%zu,\"mimalloc_version\":%d,\"pages\":{\"current\":%lld,\"peak\":%lld,\"total\":%lld}}\n\0"
+            .as_ptr() as *const libc::c_char,
+        (*stats).version,
+        mimalloc_core::MI_MALLOC_VERSION,
+        (*stats).pages.current as libc::c_longlong,
+        (*stats).pages.peak as libc::c_longlong,
+        (*stats).pages.total as libc::c_longlong,
+    );
+    if n < 0 {
+        return core::ptr::null_mut();
+    }
+    let need = (n as usize) + 1;
+    if buf.is_null() {
+        let out = mi::malloc(need) as *mut libc::c_char;
+        if out.is_null() {
+            return core::ptr::null_mut();
+        }
+        core::ptr::copy_nonoverlapping(tmp.as_ptr(), out, need);
+        return out;
+    }
+    if buf_size < need {
+        return core::ptr::null_mut();
+    }
+    core::ptr::copy_nonoverlapping(tmp.as_ptr(), buf, need);
+    buf
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_stats_as_json(
+    stats: *mut mimalloc_core::Stats,
+    buf_size: usize,
+    buf: *mut libc::c_char,
+) -> *mut libc::c_char {
+    stats_as_json(stats, buf_size, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_stats_get_json(
+    buf_size: usize,
+    buf: *mut libc::c_char,
+) -> *mut libc::c_char {
+    let mut stats = core::mem::zeroed();
+    if !mi_stats_get(&mut stats) {
+        return core::ptr::null_mut();
+    }
+    stats_as_json(&mut stats, buf_size, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_stats_get_json(
+    heap: *mut mimalloc_core::Heap,
+    buf_size: usize,
+    buf: *mut libc::c_char,
+) -> *mut libc::c_char {
+    let mut stats = core::mem::zeroed();
+    if !mi_heap_stats_get(heap, &mut stats) {
+        return core::ptr::null_mut();
+    }
+    stats_as_json(&mut stats, buf_size, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_subproc_stats_get_json(
+    subproc: mimalloc_core::SubprocId,
+    buf_size: usize,
+    buf: *mut libc::c_char,
+) -> *mut libc::c_char {
+    let mut stats = core::mem::zeroed();
+    if !mi_subproc_stats_get(subproc, &mut stats) {
+        return core::ptr::null_mut();
+    }
+    stats_as_json(&mut stats, buf_size, buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_stats_print_out(
+    _heap: *mut mimalloc_core::Heap,
+    _out: *mut c_void,
+    _arg: *mut c_void,
+) {
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_subproc_stats_print_out(
+    _subproc: mimalloc_core::SubprocId,
+    _out: *mut c_void,
+    _arg: *mut c_void,
+) {
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_subproc_heap_stats_print_out(
+    _subproc: mimalloc_core::SubprocId,
+    _out: *mut c_void,
+    _arg: *mut c_void,
+) {
 }
 
 // ---------------------------------------------------------------------------
