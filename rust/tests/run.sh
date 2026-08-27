@@ -41,4 +41,7 @@ LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp
 cc -O2 -pthread -DNDEBUG -I"$REPO/include" "$REPO/test/test-stress-subprocs.c" "$SO" -o /tmp/mi-stress-subprocs
 LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp/mi-stress-subprocs 4 10 3
 
+c++ -O2 -pthread -DNDEBUG -I"$REPO/include" "$ROOT/tests/cxx.cpp" "$SO" -o /tmp/mi-cxx
+LD_LIBRARY_PATH="$ROOT/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" /tmp/mi-cxx
+
 echo "all rust mimalloc checks passed"

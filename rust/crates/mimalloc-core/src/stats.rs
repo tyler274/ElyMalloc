@@ -6,6 +6,10 @@ static PAGES_CURRENT: AtomicI64 = AtomicI64::new(0);
 static PAGES_TOTAL: AtomicI64 = AtomicI64::new(0);
 static PAGES_PEAK: AtomicI64 = AtomicI64::new(0);
 static HEAPS_CURRENT: AtomicI64 = AtomicI64::new(0);
+static MALLOC_CURRENT: AtomicI64 = AtomicI64::new(0);
+static MALLOC_TOTAL: AtomicI64 = AtomicI64::new(0);
+static MALLOC_PEAK: AtomicI64 = AtomicI64::new(0);
+static MALLOC_COUNT: AtomicI64 = AtomicI64::new(0);
 
 pub fn page_add() {
     let cur = PAGES_CURRENT.fetch_add(1, Ordering::Relaxed) + 1;
@@ -119,6 +123,13 @@ pub unsafe fn fill(out: *mut Stats) {
     (*out).pages.total = PAGES_TOTAL.load(Ordering::Relaxed);
     (*out).pages.peak = PAGES_PEAK.load(Ordering::Relaxed);
     (*out).heaps.current = HEAPS_CURRENT.load(Ordering::Relaxed);
+    (*out).malloc_requested.current = MALLOC_CURRENT.load(Ordering::Relaxed);
+    (*out).malloc_requested.total = MALLOC_TOTAL.load(Ordering::Relaxed);
+    (*out).malloc_requested.peak = MALLOC_PEAK.load(Ordering::Relaxed);
+    (*out).malloc_normal.current = MALLOC_CURRENT.load(Ordering::Relaxed);
+    (*out).malloc_normal.total = MALLOC_TOTAL.load(Ordering::Relaxed);
+    (*out).malloc_normal.peak = MALLOC_PEAK.load(Ordering::Relaxed);
+    (*out).malloc_normal_count.total = MALLOC_COUNT.load(Ordering::Relaxed);
 }
 
 unsafe fn ptr_zero<T>(p: *mut T) {
@@ -129,8 +140,35 @@ pub fn reset() {
     PAGES_CURRENT.store(0, Ordering::Relaxed);
     PAGES_TOTAL.store(0, Ordering::Relaxed);
     PAGES_PEAK.store(0, Ordering::Relaxed);
+    MALLOC_CURRENT.store(0, Ordering::Relaxed);
+    MALLOC_TOTAL.store(0, Ordering::Relaxed);
+    MALLOC_PEAK.store(0, Ordering::Relaxed);
+    MALLOC_COUNT.store(0, Ordering::Relaxed);
 }
 
 pub fn get_bin_size(bin: usize) -> usize {
     crate::bin::bin_size(bin)
+}
+
+pub fn malloc_add(bytes: usize) {
+    let n = bytes as i64;
+    MALLOC_TOTAL.fetch_add(n, Ordering::Relaxed);
+    MALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+    let cur = MALLOC_CURRENT.fetch_add(n, Ordering::Relaxed) + n;
+    loop {
+        let peak = MALLOC_PEAK.load(Ordering::Relaxed);
+        if cur <= peak {
+            break;
+        }
+        if MALLOC_PEAK
+            .compare_exchange_weak(peak, cur, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            break;
+        }
+    }
+}
+
+pub fn malloc_sub(bytes: usize) {
+    MALLOC_CURRENT.fetch_sub(bytes as i64, Ordering::Relaxed);
 }

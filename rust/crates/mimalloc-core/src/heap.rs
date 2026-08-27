@@ -271,6 +271,7 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
         page::collect(page);
         let p = page::pop_local(page);
         if !p.is_null() {
+            crate::stats::malloc_add(block_size);
             return p;
         }
     }
@@ -282,6 +283,7 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
         let p = page::pop_local(page);
         if !p.is_null() {
             (*h).current[bin] = page;
+            crate::stats::malloc_add(block_size);
             return p;
         }
         page = (*page).next;
@@ -296,6 +298,8 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
     let p = page::pop_local(page);
     if p.is_null() {
         os::enomem();
+    } else {
+        crate::stats::malloc_add(block_size);
     }
     p
 }
@@ -324,6 +328,7 @@ pub unsafe fn malloc_huge_at(
         os::enomem();
         return ptr::null_mut();
     }
+    crate::stats::malloc_add(size.max(1));
     p
 }
 
@@ -593,6 +598,7 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
                 return p;
             }
             let page = crate::page_map::get(p);
+            crate::stats::malloc_sub((*page).block_size as usize);
             page::push_local(page, p);
             return malloc_huge(th, size.max(1), align);
         }

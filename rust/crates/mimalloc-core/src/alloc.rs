@@ -126,6 +126,7 @@ pub unsafe fn free(p: *mut u8) {
     if (*page).magic != PAGE_MAGIC || !page::contains(page, p) {
         return;
     }
+    crate::stats::malloc_sub(usable_size(p as *const u8));
     if (*page).capacity == 1 {
         let owner = (*page).heap.load(core::sync::atomic::Ordering::Acquire);
         heap::unlink_huge(owner, page);

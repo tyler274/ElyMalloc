@@ -8,6 +8,7 @@
 #![allow(non_snake_case)]
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use mimalloc_core::alloc as mi;
 
 #[cfg(not(test))]
@@ -28,6 +29,32 @@ fn pvoid(p: *mut u8) -> *mut c_void {
 #[inline]
 fn pu8(p: *mut c_void) -> *mut u8 {
     p as *mut u8
+}
+
+type OutputFun = unsafe extern "C" fn(*const libc::c_char, *mut c_void);
+#[allow(dead_code)]
+type ErrorFun = unsafe extern "C" fn(i32, *mut c_void);
+
+static OUT_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static OUT_ARG: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+#[allow(dead_code)]
+static ERR_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+#[allow(dead_code)]
+static ERR_ARG: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+
+unsafe fn emit_cstr(out: *mut c_void, arg: *mut c_void, msg: *const libc::c_char) {
+    let (f, a) = if out.is_null() {
+        (OUT_FN.load(Ordering::Acquire), OUT_ARG.load(Ordering::Acquire))
+    } else {
+        (out as *mut (), arg)
+    };
+    if f.is_null() {
+        let n = libc::strlen(msg);
+        libc::write(2, msg as *const c_void, n);
+    } else {
+        let cb: OutputFun = core::mem::transmute(f);
+        cb(msg, a);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +212,12 @@ pub unsafe extern "C" fn mi_process_init() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_process_done() {}
+pub unsafe extern "C" fn mi_process_done() {
+    if mimalloc_core::mi_options::is_enabled(1) || mimalloc_core::mi_options::is_enabled(2) {
+        // show_stats or verbose
+        mi_stats_print_out(core::ptr::null_mut(), core::ptr::null_mut());
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_thread_init() {
@@ -268,40 +300,174 @@ pub unsafe extern "C" fn mi_reallocarr(ptrp: *mut *mut c_void, count: usize, siz
     mi::reallocarr(ptrp as *mut *mut u8, count, size)
 }
 
+const TRY_NEW_MAX: i32 = 4;
+
+type NewHandler = unsafe extern "C" fn();
+type GetNewHandler = unsafe extern "C" fn() -> Option<NewHandler>;
+
+unsafe fn cxx_get_new_handler() -> Option<NewHandler> {
+    let p = libc::dlsym(
+        libc::RTLD_DEFAULT,
+        b"_ZSt15get_new_handlerv\0".as_ptr() as *const libc::c_char,
+    );
+    if p.is_null() {
+        return None;
+    }
+    let getter: GetNewHandler = core::mem::transmute(p);
+    getter()
+}
+
+unsafe fn try_new_handler(nothrow: bool) -> bool {
+    match cxx_get_new_handler() {
+        None => {
+            if !nothrow {
+                mimalloc_core_abort();
+            }
+            false
+        }
+        Some(h) => {
+            h();
+            true
+        }
+    }
+}
+
+unsafe fn try_malloc(size: usize, nothrow: bool) -> *mut c_void {
+    let mut p = mi_malloc(size);
+    if !p.is_null() {
+        return p;
+    }
+    for _ in 0..TRY_NEW_MAX {
+        if !try_new_handler(nothrow) {
+            break;
+        }
+        p = mi_malloc(size);
+        if !p.is_null() {
+            return p;
+        }
+    }
+    p
+}
+
+unsafe fn try_malloc_aligned(size: usize, alignment: usize, nothrow: bool) -> *mut c_void {
+    let mut p = mi_malloc_aligned(size, alignment);
+    if !p.is_null() {
+        return p;
+    }
+    for _ in 0..TRY_NEW_MAX {
+        if !try_new_handler(nothrow) {
+            break;
+        }
+        p = mi_malloc_aligned(size, alignment);
+        if !p.is_null() {
+            return p;
+        }
+    }
+    p
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn mi_new(size: usize) -> *mut c_void {
-    let p = mi::malloc(size);
+    let p = try_malloc(size, false);
     if p.is_null() {
         mimalloc_core_abort();
     }
-    pvoid(p)
+    p
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_new_nothrow(size: usize) -> *mut c_void {
-    mi_malloc(size)
+    try_malloc(size, true)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_new_aligned(size: usize, alignment: usize) -> *mut c_void {
-    let p = mi::malloc_aligned(size, alignment);
+    let p = try_malloc_aligned(size, alignment, false);
     if p.is_null() {
         mimalloc_core_abort();
     }
-    pvoid(p)
+    p
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_new_aligned_nothrow(size: usize, alignment: usize) -> *mut c_void {
-    mi_malloc_aligned(size, alignment)
+    try_malloc_aligned(size, alignment, true)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_new_n(count: usize, size: usize) -> *mut c_void {
     let Some(total) = count.checked_mul(size) else {
-        mimalloc_core_abort();
+        try_new_handler(false);
+        return core::ptr::null_mut();
     };
     mi_new(total)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_alloc_new(
+    heap: *mut mimalloc_core::Heap,
+    size: usize,
+) -> *mut c_void {
+    let mut p = mi_heap_malloc(heap, size);
+    if !p.is_null() {
+        return p;
+    }
+    for _ in 0..TRY_NEW_MAX {
+        if !try_new_handler(false) {
+            break;
+        }
+        p = mi_heap_malloc(heap, size);
+        if !p.is_null() {
+            return p;
+        }
+    }
+    if p.is_null() {
+        mimalloc_core_abort();
+    }
+    p
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_alloc_new_n(
+    heap: *mut mimalloc_core::Heap,
+    count: usize,
+    size: usize,
+) -> *mut c_void {
+    let Some(total) = count.checked_mul(size) else {
+        try_new_handler(false);
+        return core::ptr::null_mut();
+    };
+    mi_heap_alloc_new(heap, total)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_new_realloc(p: *mut c_void, newsize: usize) -> *mut c_void {
+    let mut q = mi_realloc(p, newsize);
+    if !q.is_null() || (p.is_null() && newsize == 0) {
+        return q;
+    }
+    for _ in 0..TRY_NEW_MAX {
+        if !try_new_handler(false) {
+            break;
+        }
+        q = mi_realloc(p, newsize);
+        if !q.is_null() {
+            return q;
+        }
+    }
+    if q.is_null() {
+        mimalloc_core_abort();
+    }
+    q
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_new_reallocn(p: *mut c_void, count: usize, size: usize) -> *mut c_void {
+    let Some(total) = count.checked_mul(size) else {
+        try_new_handler(false);
+        return core::ptr::null_mut();
+    };
+    mi_new_realloc(p, total)
 }
 
 #[no_mangle]
@@ -549,23 +715,6 @@ pub unsafe extern "C" fn mi_heap_mallocn(
     size: usize,
 ) -> *mut c_void {
     mi_heap_calloc(heap, count, size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn mi_heap_alloc_new(
-    heap: *mut mimalloc_core::Heap,
-    size: usize,
-) -> *mut c_void {
-    mi_heap_malloc(heap, size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn mi_heap_alloc_new_n(
-    heap: *mut mimalloc_core::Heap,
-    count: usize,
-    size: usize,
-) -> *mut c_void {
-    mi_heap_mallocn(heap, count, size)
 }
 
 #[no_mangle]
@@ -944,10 +1093,16 @@ pub unsafe extern "C" fn mi_reserve_huge_os_pages(
 pub unsafe extern "C" fn mi_register_deferred_free(_f: *mut c_void, _arg: *mut c_void) {}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_register_output(_f: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_register_output(f: *mut c_void, arg: *mut c_void) {
+    OUT_FN.store(f as *mut (), Ordering::Release);
+    OUT_ARG.store(arg, Ordering::Release);
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_register_error(_f: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_register_error(f: *mut c_void, arg: *mut c_void) {
+    ERR_FN.store(f as *mut (), Ordering::Release);
+    ERR_ARG.store(arg, Ordering::Release);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_thread_set_in_threadpool() {}
@@ -1005,13 +1160,77 @@ pub unsafe extern "C" fn mi_process_info(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_process_info_print() {}
+pub unsafe extern "C" fn mi_process_info_print() {
+    mi_process_info_print_out(core::ptr::null_mut(), core::ptr::null_mut());
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_process_info_print_out(_out: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_process_info_print_out(out: *mut c_void, arg: *mut c_void) {
+    let mut elapsed = 0usize;
+    let mut user = 0usize;
+    let mut sys = 0usize;
+    let mut rss = 0usize;
+    let mut peak_rss = 0usize;
+    let mut commit = 0usize;
+    let mut peak_commit = 0usize;
+    let mut faults = 0usize;
+    mi_process_info(
+        &mut elapsed,
+        &mut user,
+        &mut sys,
+        &mut rss,
+        &mut peak_rss,
+        &mut commit,
+        &mut peak_commit,
+        &mut faults,
+    );
+    let mut buf = [0i8; 256];
+    libc::snprintf(
+        buf.as_mut_ptr(),
+        buf.len(),
+        b"elapsed: %zu ms, user: %zu ms, sys: %zu ms, rss: %zu, peak rss: %zu, page faults: %zu\n\0"
+            .as_ptr() as *const libc::c_char,
+        elapsed,
+        user,
+        sys,
+        rss,
+        peak_rss,
+        faults,
+    );
+    emit_cstr(out, arg, buf.as_ptr());
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_options_print_out(_out: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_options_print_out(out: *mut c_void, arg: *mut c_void) {
+    let mut buf = [0i8; 128];
+    libc::snprintf(
+        buf.as_mut_ptr(),
+        buf.len(),
+        b"v%i.%i.%i (rust rewrite)\n\0".as_ptr() as *const libc::c_char,
+        mimalloc_core::MI_MALLOC_VERSION / 10000,
+        (mimalloc_core::MI_MALLOC_VERSION % 10000) / 100,
+        mimalloc_core::MI_MALLOC_VERSION % 100,
+    );
+    emit_cstr(out, arg, buf.as_ptr());
+    for i in 0..mimalloc_core::mi_options::NAMES.len() {
+        let Some(name) = mimalloc_core::mi_options::name(i as i32) else {
+            continue;
+        };
+        let mut namebuf = [0u8; 64];
+        if name.len() + 1 > namebuf.len() {
+            continue;
+        }
+        namebuf[..name.len()].copy_from_slice(name.as_bytes());
+        libc::snprintf(
+            buf.as_mut_ptr(),
+            buf.len(),
+            b"option '%s': %ld\n\0".as_ptr() as *const libc::c_char,
+            namebuf.as_ptr(),
+            mimalloc_core::mi_options::get(i as i32) as libc::c_long,
+        );
+        emit_cstr(out, arg, buf.as_ptr());
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_arenas_print() {}
@@ -1368,25 +1587,36 @@ pub unsafe extern "C" fn mi_uzalloc_small(size: usize, block_size: *mut usize) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_new_realloc(p: *mut c_void, newsize: usize) -> *mut c_void {
-    mi_realloc(p, newsize)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn mi_new_reallocn(p: *mut c_void, count: usize, size: usize) -> *mut c_void {
-    mi_reallocn(p, count, size)
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn mi_free_aligned(p: *mut c_void, _alignment: usize) {
     mi_free(p);
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_stats_print(_out: *mut c_void) {}
+pub unsafe extern "C" fn mi_stats_print(out: *mut c_void) {
+    mi_stats_print_out(out, core::ptr::null_mut());
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_stats_print_out(_out: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_stats_print_out(out: *mut c_void, arg: *mut c_void) {
+    let mut stats = core::mem::zeroed();
+    if !mi_stats_get(&mut stats) {
+        return;
+    }
+    let mut buf = [0i8; 256];
+    libc::snprintf(
+        buf.as_mut_ptr(),
+        buf.len(),
+        b"mimalloc: pages current %lld peak %lld total %lld, malloc current %lld peak %lld count %lld\n\0"
+            .as_ptr() as *const libc::c_char,
+        stats.pages.current as libc::c_longlong,
+        stats.pages.peak as libc::c_longlong,
+        stats.pages.total as libc::c_longlong,
+        stats.malloc_requested.current as libc::c_longlong,
+        stats.malloc_requested.peak as libc::c_longlong,
+        stats.malloc_normal_count.total as libc::c_longlong,
+    );
+    emit_cstr(out, arg, buf.as_ptr());
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_stats_reset() {
@@ -1403,7 +1633,9 @@ pub unsafe extern "C" fn mi_stats_get(stats: *mut mimalloc_core::Stats) -> bool 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_options_print() {}
+pub unsafe extern "C" fn mi_options_print() {
+    mi_options_print_out(core::ptr::null_mut(), core::ptr::null_mut());
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_debug_show_arenas() {}
@@ -1614,7 +1846,9 @@ pub unsafe extern "C" fn mi_unsafe_heap_page_is_under_utilized(
 pub unsafe extern "C" fn mi_stats_merge() {}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_thread_stats_print_out(_out: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_thread_stats_print_out(out: *mut c_void, arg: *mut c_void) {
+    mi_stats_print_out(out, arg);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_heap_stats_merge_to_subproc(_heap: *mut mimalloc_core::Heap) {}
@@ -1745,25 +1979,28 @@ pub unsafe extern "C" fn mi_subproc_stats_get_json(
 #[no_mangle]
 pub unsafe extern "C" fn mi_heap_stats_print_out(
     _heap: *mut mimalloc_core::Heap,
-    _out: *mut c_void,
-    _arg: *mut c_void,
+    out: *mut c_void,
+    arg: *mut c_void,
 ) {
+    mi_stats_print_out(out, arg);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_subproc_stats_print_out(
     _subproc: mimalloc_core::SubprocId,
-    _out: *mut c_void,
-    _arg: *mut c_void,
+    out: *mut c_void,
+    arg: *mut c_void,
 ) {
+    mi_stats_print_out(out, arg);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_subproc_heap_stats_print_out(
     _subproc: mimalloc_core::SubprocId,
-    _out: *mut c_void,
-    _arg: *mut c_void,
+    out: *mut c_void,
+    arg: *mut c_void,
 ) {
+    mi_stats_print_out(out, arg);
 }
 
 // ---------------------------------------------------------------------------
@@ -1962,6 +2199,24 @@ pub unsafe extern "C" fn _ZnamSt11align_val_t(n: usize, al: usize) -> *mut c_voi
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn _ZnwmSt11align_val_tRKSt9nothrow_t(
+    n: usize,
+    al: usize,
+    _tag: *const c_void,
+) -> *mut c_void {
+    mi_new_aligned_nothrow(n, al)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn _ZnamSt11align_val_tRKSt9nothrow_t(
+    n: usize,
+    al: usize,
+    _tag: *const c_void,
+) -> *mut c_void {
+    mi_new_aligned_nothrow(n, al)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn _ZdlPvSt11align_val_t(p: *mut c_void, _al: usize) {
     mi_free(p);
 }
@@ -1981,11 +2236,44 @@ pub unsafe extern "C" fn _ZdaPvmSt11align_val_t(p: *mut c_void, _n: usize, _al: 
     mi_free(p);
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn _ZdlPvRKSt9nothrow_t(p: *mut c_void, _tag: *const c_void) {
+    mi_free(p);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn _ZdaPvRKSt9nothrow_t(p: *mut c_void, _tag: *const c_void) {
+    mi_free(p);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn _ZdlPvSt11align_val_tRKSt9nothrow_t(
+    p: *mut c_void,
+    _al: usize,
+    _tag: *const c_void,
+) {
+    mi_free(p);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn _ZdaPvSt11align_val_tRKSt9nothrow_t(
+    p: *mut c_void,
+    _al: usize,
+    _tag: *const c_void,
+) {
+    mi_free(p);
+}
+
 // GNU constructor so we init before most other libraries.
 #[used]
 #[link_section = ".init_array"]
 static INIT: extern "C" fn() = mi_ctor;
 
+extern "C" fn process_done_atexit() {
+    unsafe { mi_process_done(); }
+}
+
 extern "C" fn mi_ctor() {
     mimalloc_core::init();
+    let _ = unsafe { libc::atexit(process_done_atexit) };
 }

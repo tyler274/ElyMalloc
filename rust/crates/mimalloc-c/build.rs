@@ -5,4 +5,5 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-soname,libmimalloc.so.3");
     }
     println!("cargo:rustc-link-lib=pthread");
+    println!("cargo:rustc-link-lib=dl");
 }
