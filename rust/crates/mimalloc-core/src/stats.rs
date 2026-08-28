@@ -10,22 +10,38 @@ static MALLOC_CURRENT: AtomicI64 = AtomicI64::new(0);
 static MALLOC_TOTAL: AtomicI64 = AtomicI64::new(0);
 static MALLOC_PEAK: AtomicI64 = AtomicI64::new(0);
 static MALLOC_COUNT: AtomicI64 = AtomicI64::new(0);
+static RESERVED_CURRENT: AtomicI64 = AtomicI64::new(0);
+static RESERVED_TOTAL: AtomicI64 = AtomicI64::new(0);
+static RESERVED_PEAK: AtomicI64 = AtomicI64::new(0);
+static COMMITTED_CURRENT: AtomicI64 = AtomicI64::new(0);
+static COMMITTED_TOTAL: AtomicI64 = AtomicI64::new(0);
+static COMMITTED_PEAK: AtomicI64 = AtomicI64::new(0);
+static MMAP_CALLS: AtomicI64 = AtomicI64::new(0);
+static PURGED: AtomicI64 = AtomicI64::new(0);
+static PURGE_CALLS: AtomicI64 = AtomicI64::new(0);
+static ARENA_COUNT: AtomicI64 = AtomicI64::new(0);
 
-pub fn page_add() {
-    let cur = PAGES_CURRENT.fetch_add(1, Ordering::Relaxed) + 1;
-    PAGES_TOTAL.fetch_add(1, Ordering::Relaxed);
+fn peak_add(current: &AtomicI64, peak: &AtomicI64, total: Option<&AtomicI64>, n: i64) {
+    if let Some(total) = total {
+        total.fetch_add(n, Ordering::Relaxed);
+    }
+    let cur = current.fetch_add(n, Ordering::Relaxed) + n;
     loop {
-        let peak = PAGES_PEAK.load(Ordering::Relaxed);
-        if cur <= peak {
+        let p = peak.load(Ordering::Relaxed);
+        if cur <= p {
             break;
         }
-        if PAGES_PEAK
-            .compare_exchange_weak(peak, cur, Ordering::Relaxed, Ordering::Relaxed)
+        if peak
+            .compare_exchange_weak(p, cur, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
         {
             break;
         }
     }
+}
+
+pub fn page_add() {
+    peak_add(&PAGES_CURRENT, &PAGES_PEAK, Some(&PAGES_TOTAL), 1);
 }
 
 pub fn page_sub() {
@@ -130,10 +146,132 @@ pub unsafe fn fill(out: *mut Stats) {
     (*out).malloc_normal.total = MALLOC_TOTAL.load(Ordering::Relaxed);
     (*out).malloc_normal.peak = MALLOC_PEAK.load(Ordering::Relaxed);
     (*out).malloc_normal_count.total = MALLOC_COUNT.load(Ordering::Relaxed);
+    (*out).reserved.current = RESERVED_CURRENT.load(Ordering::Relaxed);
+    (*out).reserved.total = RESERVED_TOTAL.load(Ordering::Relaxed);
+    (*out).reserved.peak = RESERVED_PEAK.load(Ordering::Relaxed);
+    (*out).committed.current = COMMITTED_CURRENT.load(Ordering::Relaxed);
+    (*out).committed.total = COMMITTED_TOTAL.load(Ordering::Relaxed);
+    (*out).committed.peak = COMMITTED_PEAK.load(Ordering::Relaxed);
+    (*out).mmap_calls.total = MMAP_CALLS.load(Ordering::Relaxed);
+    (*out).purged.total = PURGED.load(Ordering::Relaxed);
+    (*out).purge_calls.total = PURGE_CALLS.load(Ordering::Relaxed);
+    (*out).arena_count.total = ARENA_COUNT.load(Ordering::Relaxed);
+    (*out).malloc_guarded_count.total = GUARDED_COUNT.load(Ordering::Relaxed);
+}
+
+pub unsafe fn clear(out: *mut Stats) {
+    ptr_zero(out);
+    if !out.is_null() {
+        (*out).size = core::mem::size_of::<Stats>();
+        (*out).version = STAT_VERSION;
+    }
 }
 
 unsafe fn ptr_zero<T>(p: *mut T) {
     core::ptr::write_bytes(p as *mut u8, 0, core::mem::size_of::<T>());
+}
+
+/// Compact counters stored on each thread-heap / subprocess.
+#[repr(C)]
+pub struct AllocStats {
+    pub malloc_current: AtomicI64,
+    pub malloc_total: AtomicI64,
+    pub malloc_peak: AtomicI64,
+    pub malloc_count: AtomicI64,
+    pub pages_current: AtomicI64,
+    pub pages_total: AtomicI64,
+    pub pages_peak: AtomicI64,
+}
+
+impl AllocStats {
+    pub fn add_malloc(&self, bytes: usize) {
+        peak_add(
+            &self.malloc_current,
+            &self.malloc_peak,
+            Some(&self.malloc_total),
+            bytes as i64,
+        );
+        self.malloc_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn sub_malloc(&self, bytes: usize) {
+        self.malloc_current
+            .fetch_sub(bytes as i64, Ordering::Relaxed);
+    }
+
+    pub fn add_page(&self) {
+        peak_add(
+            &self.pages_current,
+            &self.pages_peak,
+            Some(&self.pages_total),
+            1,
+        );
+    }
+
+    pub fn sub_page(&self) {
+        self.pages_current.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn merge_from(&self, other: &AllocStats) {
+        let n = other.malloc_current.load(Ordering::Relaxed);
+        if n != 0 {
+            peak_add(
+                &self.malloc_current,
+                &self.malloc_peak,
+                Some(&self.malloc_total),
+                n,
+            );
+        }
+        self.malloc_count.fetch_add(
+            other.malloc_count.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        let p = other.pages_current.load(Ordering::Relaxed);
+        if p != 0 {
+            peak_add(
+                &self.pages_current,
+                &self.pages_peak,
+                Some(&self.pages_total),
+                p,
+            );
+        }
+    }
+
+    pub unsafe fn copy_into(&self, out: *mut Stats) {
+        if out.is_null() {
+            return;
+        }
+        (*out).malloc_requested.current = self.malloc_current.load(Ordering::Relaxed);
+        (*out).malloc_requested.total = self.malloc_total.load(Ordering::Relaxed);
+        (*out).malloc_requested.peak = self.malloc_peak.load(Ordering::Relaxed);
+        (*out).malloc_normal.current = (*out).malloc_requested.current;
+        (*out).malloc_normal.total = (*out).malloc_requested.total;
+        (*out).malloc_normal.peak = (*out).malloc_requested.peak;
+        (*out).malloc_normal_count.total = self.malloc_count.load(Ordering::Relaxed);
+        (*out).pages.current = self.pages_current.load(Ordering::Relaxed);
+        (*out).pages.total = self.pages_total.load(Ordering::Relaxed);
+        (*out).pages.peak = self.pages_peak.load(Ordering::Relaxed);
+    }
+
+    pub unsafe fn add_into(&self, out: *mut Stats) {
+        if out.is_null() {
+            return;
+        }
+        (*out).malloc_requested.current += self.malloc_current.load(Ordering::Relaxed);
+        (*out).malloc_requested.total += self.malloc_total.load(Ordering::Relaxed);
+        if self.malloc_peak.load(Ordering::Relaxed) > (*out).malloc_requested.peak {
+            (*out).malloc_requested.peak = self.malloc_peak.load(Ordering::Relaxed);
+        }
+        (*out).malloc_normal.current = (*out).malloc_requested.current;
+        (*out).malloc_normal.total = (*out).malloc_requested.total;
+        (*out).malloc_normal.peak = (*out).malloc_requested.peak;
+        (*out).malloc_normal_count.total += self.malloc_count.load(Ordering::Relaxed);
+        (*out).pages.current += self.pages_current.load(Ordering::Relaxed);
+        (*out).pages.total += self.pages_total.load(Ordering::Relaxed);
+        if self.pages_peak.load(Ordering::Relaxed) > (*out).pages.peak {
+            (*out).pages.peak = self.pages_peak.load(Ordering::Relaxed);
+        }
+    }
 }
 
 pub fn reset() {
@@ -144,6 +282,17 @@ pub fn reset() {
     MALLOC_TOTAL.store(0, Ordering::Relaxed);
     MALLOC_PEAK.store(0, Ordering::Relaxed);
     MALLOC_COUNT.store(0, Ordering::Relaxed);
+    RESERVED_CURRENT.store(0, Ordering::Relaxed);
+    RESERVED_TOTAL.store(0, Ordering::Relaxed);
+    RESERVED_PEAK.store(0, Ordering::Relaxed);
+    COMMITTED_CURRENT.store(0, Ordering::Relaxed);
+    COMMITTED_TOTAL.store(0, Ordering::Relaxed);
+    COMMITTED_PEAK.store(0, Ordering::Relaxed);
+    MMAP_CALLS.store(0, Ordering::Relaxed);
+    PURGED.store(0, Ordering::Relaxed);
+    PURGE_CALLS.store(0, Ordering::Relaxed);
+    ARENA_COUNT.store(0, Ordering::Relaxed);
+    GUARDED_COUNT.store(0, Ordering::Relaxed);
 }
 
 pub fn get_bin_size(bin: usize) -> usize {
@@ -151,24 +300,61 @@ pub fn get_bin_size(bin: usize) -> usize {
 }
 
 pub fn malloc_add(bytes: usize) {
-    let n = bytes as i64;
-    MALLOC_TOTAL.fetch_add(n, Ordering::Relaxed);
+    peak_add(
+        &MALLOC_CURRENT,
+        &MALLOC_PEAK,
+        Some(&MALLOC_TOTAL),
+        bytes as i64,
+    );
     MALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-    let cur = MALLOC_CURRENT.fetch_add(n, Ordering::Relaxed) + n;
-    loop {
-        let peak = MALLOC_PEAK.load(Ordering::Relaxed);
-        if cur <= peak {
-            break;
-        }
-        if MALLOC_PEAK
-            .compare_exchange_weak(peak, cur, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            break;
-        }
-    }
+}
+
+static GUARDED_COUNT: AtomicI64 = AtomicI64::new(0);
+
+pub fn malloc_guarded_add() {
+    GUARDED_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn malloc_sub(bytes: usize) {
     MALLOC_CURRENT.fetch_sub(bytes as i64, Ordering::Relaxed);
+}
+
+pub fn mmap_map(size: usize, committed: bool) {
+    let n = size as i64;
+    MMAP_CALLS.fetch_add(1, Ordering::Relaxed);
+    peak_add(&RESERVED_CURRENT, &RESERVED_PEAK, Some(&RESERVED_TOTAL), n);
+    if committed {
+        peak_add(
+            &COMMITTED_CURRENT,
+            &COMMITTED_PEAK,
+            Some(&COMMITTED_TOTAL),
+            n,
+        );
+    }
+}
+
+pub fn mmap_unmap(size: usize, committed: bool) {
+    let n = size as i64;
+    RESERVED_CURRENT.fetch_sub(n, Ordering::Relaxed);
+    if committed {
+        COMMITTED_CURRENT.fetch_sub(n, Ordering::Relaxed);
+    }
+}
+
+pub fn commit_add(size: usize) {
+    peak_add(
+        &COMMITTED_CURRENT,
+        &COMMITTED_PEAK,
+        Some(&COMMITTED_TOTAL),
+        size as i64,
+    );
+}
+
+pub fn purge(size: usize) {
+    PURGE_CALLS.fetch_add(1, Ordering::Relaxed);
+    PURGED.fetch_add(size as i64, Ordering::Relaxed);
+}
+
+pub fn arena_add() {
+    ARENA_COUNT.fetch_add(1, Ordering::Relaxed);
 }

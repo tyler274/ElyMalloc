@@ -4,6 +4,7 @@
 use crate::heap::{self, Heap};
 use crate::os;
 use crate::spin::SpinLock;
+use crate::stats::{self, AllocStats, Stats};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
@@ -13,6 +14,7 @@ pub const SUBPROC_MAGIC: u32 = 0x4D495350; // 'MISP'
 pub struct Subproc {
     pub magic: u32,
     pub next_meta: *mut Subproc,
+    pub stats: AllocStats,
 }
 
 #[repr(C)]
@@ -136,6 +138,12 @@ pub unsafe fn destroy(id: SubprocId) {
     if s == MAIN.load(Ordering::Acquire) {
         return;
     }
+    let key = ensure_key();
+    if libc::pthread_getspecific(key) as *mut Subproc == s {
+        libc::pthread_setspecific(key, ptr::null());
+    }
+    heap::destroy_heaps_in_subproc(s);
+    crate::arena::destroy_owned_in_subproc(s);
     (*s).magic = 0;
     meta_free(s);
 }
@@ -153,10 +161,13 @@ pub fn is_valid(s: *const Subproc) -> bool {
     !s.is_null() && unsafe { (*s).magic == SUBPROC_MAGIC }
 }
 
-pub type HeapVisitFun =
-    unsafe extern "C" fn(heap: *mut Heap, arg: *mut core::ffi::c_void) -> bool;
+pub type HeapVisitFun = unsafe extern "C" fn(heap: *mut Heap, arg: *mut core::ffi::c_void) -> bool;
 
-pub unsafe fn visit_heaps(id: SubprocId, visitor: Option<HeapVisitFun>, arg: *mut core::ffi::c_void) -> bool {
+pub unsafe fn visit_heaps(
+    id: SubprocId,
+    visitor: Option<HeapVisitFun>,
+    arg: *mut core::ffi::c_void,
+) -> bool {
     let Some(visitor) = visitor else {
         return true;
     };
@@ -165,6 +176,24 @@ pub unsafe fn visit_heaps(id: SubprocId, visitor: Option<HeapVisitFun>, arg: *mu
         return false;
     }
     heap::visit_all_heaps(s, visitor, arg)
+}
+
+unsafe extern "C" fn add_heap_stats(h: *mut Heap, arg: *mut core::ffi::c_void) -> bool {
+    heap::heap_stats_add_into(h, arg as *mut Stats);
+    true
+}
+
+pub unsafe fn stats_get(id: SubprocId, out: *mut Stats, exclusive: bool) -> bool {
+    let s = id.ptr;
+    if out.is_null() || !is_valid(s) {
+        return false;
+    }
+    stats::clear(out);
+    (*s).stats.copy_into(out);
+    if !exclusive {
+        heap::visit_all_heaps(s, add_heap_stats, out as *mut core::ffi::c_void);
+    }
+    true
 }
 
 pub fn force_unlock() {

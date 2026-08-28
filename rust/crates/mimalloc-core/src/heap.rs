@@ -4,9 +4,10 @@ use crate::arena::{self, Arena};
 use crate::bin::{self, BIN_COUNT};
 use crate::page::{self, Page};
 use crate::spin::SpinLock;
-use crate::{os, LARGE_MAX_OBJ_SIZE, MAX_ALLOC, SLICE_SIZE};
+use crate::stats::AllocStats;
+use crate::{align_up, os, LARGE_MAX_OBJ_SIZE, MAX_ALLOC, PADDING_SIZE, SLICE_SIZE};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 #[repr(C, align(64))]
 pub struct ThreadHeap {
@@ -17,6 +18,14 @@ pub struct ThreadHeap {
     pub next_meta: *mut ThreadHeap,
     pub arena: *mut Arena,
     pub owner: *mut Heap,
+    pub heartbeat: AtomicU64,
+    pub generic_count: AtomicU32,
+    pub subproc: *mut crate::subproc::Subproc,
+    pub stats: AllocStats,
+    pub guarded_sample_rate: usize,
+    pub guarded_sample_count: usize,
+    pub guarded_size_min: usize,
+    pub guarded_size_max: usize,
 }
 
 pub type Theap = ThreadHeap;
@@ -235,18 +244,46 @@ unsafe fn reclaim_abandoned(h: *mut ThreadHeap, bin: usize) -> *mut Page {
     if page.is_null() {
         return ptr::null_mut();
     }
-    // The stack may hold a chain via `next`.
-    let rest = (*page).next;
-    (*page).next = ptr::null_mut();
-    (*page).prev = ptr::null_mut();
-    if !rest.is_null() {
-        abandoned(bin).store(rest, Ordering::Release);
+    let want = (*h).subproc;
+    let mut cur = page;
+    let mut taken: *mut Page = ptr::null_mut();
+    let mut rest_head: *mut Page = ptr::null_mut();
+    let mut rest_tail: *mut Page = ptr::null_mut();
+    while !cur.is_null() {
+        let next = (*cur).next;
+        (*cur).next = ptr::null_mut();
+        (*cur).prev = ptr::null_mut();
+        if taken.is_null() && (*cur).subproc == want {
+            taken = cur;
+        } else if rest_head.is_null() {
+            rest_head = cur;
+            rest_tail = cur;
+        } else {
+            (*rest_tail).next = cur;
+            rest_tail = cur;
+        }
+        cur = next;
     }
-    (*page).heap.store(h, Ordering::Release);
-    (*page).set_abandoned(false);
-    page::collect(page);
-    list_push(&mut (*h).lists[bin], page);
-    page
+    if !rest_head.is_null() {
+        loop {
+            let old = abandoned(bin).load(Ordering::Relaxed);
+            (*rest_tail).next = old;
+            if abandoned(bin)
+                .compare_exchange_weak(old, rest_head, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+    if taken.is_null() {
+        return ptr::null_mut();
+    }
+    (*taken).heap.store(h, Ordering::Release);
+    (*taken).set_abandoned(false);
+    page::collect(taken);
+    list_push(&mut (*h).lists[bin], taken);
+    taken
 }
 
 unsafe fn new_page(h: *mut ThreadHeap, bin: usize, block_size: usize) -> *mut Page {
@@ -260,8 +297,19 @@ unsafe fn new_page(h: *mut ThreadHeap, bin: usize, block_size: usize) -> *mut Pa
         return ptr::null_mut();
     }
     (*page).heap.store(h, Ordering::Release);
+    (*page).subproc = (*h).subproc;
+    (*h).stats.add_page();
     list_push(&mut (*h).lists[bin], page);
     page
+}
+
+unsafe fn maybe_deferred_free(h: *mut ThreadHeap) {
+    let c = (*h).generic_count.fetch_add(1, Ordering::Relaxed) + 1;
+    if c >= 1000 {
+        (*h).generic_count.store(0, Ordering::Relaxed);
+        let hb = (*h).heartbeat.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::hooks::deferred_free(false, hb);
+    }
 }
 
 pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
@@ -272,9 +320,11 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
         let p = page::pop_local(page);
         if !p.is_null() {
             crate::stats::malloc_add(block_size);
+            (*h).stats.add_malloc(block_size);
             return p;
         }
     }
+    maybe_deferred_free(h);
     // Try other owned pages of this bin.
     page = (*h).lists[bin];
     let mut n = 0;
@@ -284,6 +334,7 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
         if !p.is_null() {
             (*h).current[bin] = page;
             crate::stats::malloc_add(block_size);
+            (*h).stats.add_malloc(block_size);
             return p;
         }
         page = (*page).next;
@@ -300,6 +351,7 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
         os::enomem();
     } else {
         crate::stats::malloc_add(block_size);
+        (*h).stats.add_malloc(block_size);
     }
     p
 }
@@ -320,6 +372,8 @@ pub unsafe fn malloc_huge_at(
         return ptr::null_mut();
     }
     (*page).heap.store(h, Ordering::Release);
+    (*page).subproc = (*h).subproc;
+    (*h).stats.add_page();
     list_push(&mut (*h).huge, page);
     let p = page::pop_local(page);
     if p.is_null() {
@@ -329,6 +383,7 @@ pub unsafe fn malloc_huge_at(
         return ptr::null_mut();
     }
     crate::stats::malloc_add(size.max(1));
+    (*h).stats.add_malloc(size.max(1));
     p
 }
 
@@ -339,12 +394,101 @@ pub unsafe fn unlink_huge(h: *mut ThreadHeap, page: *mut Page) {
     list_remove(&mut (*h).huge, page);
 }
 
+#[inline]
+unsafe fn should_guard(h: *mut ThreadHeap, size: usize) -> bool {
+    if h.is_null() {
+        return false;
+    }
+    let count = (*h).guarded_sample_count.wrapping_sub(1);
+    if count != 0 {
+        (*h).guarded_sample_count = count;
+        return false;
+    }
+    let rate = (*h).guarded_sample_rate;
+    if rate == 0 {
+        return false;
+    }
+    if size >= (*h).guarded_size_min && size <= (*h).guarded_size_max {
+        (*h).guarded_sample_count = rate;
+        true
+    } else {
+        (*h).guarded_sample_count = 1;
+        false
+    }
+}
+
+unsafe fn malloc_guarded(h: *mut ThreadHeap, size: usize, align: usize) -> *mut u8 {
+    let os = os::page_size();
+    let align = if align == 0 { 16 } else { align };
+    let obj = align_up(page::request_size(size), 16.max(align).min(os));
+    let payload = align_up(
+        obj.saturating_add(core::mem::size_of::<page::Block>()),
+        os,
+    )
+    .saturating_add(os);
+    let page = page::create_huge(payload, os, 0, (*h).arena);
+    if page.is_null() {
+        os::enomem();
+        return ptr::null_mut();
+    }
+    (*page).heap.store(h, Ordering::Release);
+    (*page).subproc = (*h).subproc;
+    (*h).stats.add_page();
+    list_push(&mut (*h).huge, page);
+    let raw = page::pop_local(page);
+    if raw.is_null() {
+        list_remove(&mut (*h).huge, page);
+        page::destroy(page);
+        os::enomem();
+        return ptr::null_mut();
+    }
+    let p = page::arm_guarded(page, obj);
+    if p.is_null() {
+        list_remove(&mut (*h).huge, page);
+        page::destroy(page);
+        os::enomem();
+        return ptr::null_mut();
+    }
+    crate::stats::malloc_add(payload);
+    (*h).stats.add_malloc(payload);
+    crate::stats::malloc_guarded_add();
+    p
+}
+
+pub unsafe fn theap_guarded_set_sample_rate(th: *mut ThreadHeap, sample_rate: usize, seed: usize) {
+    if th.is_null() {
+        return;
+    }
+    (*th).guarded_sample_rate = sample_rate;
+    (*th).guarded_sample_count = sample_rate;
+    if sample_rate > 1 {
+        let seed = if seed == 0 {
+            (*th).heartbeat.load(Ordering::Relaxed) as usize
+                ^ (*th).tid as usize
+                ^ (th as usize)
+        } else {
+            seed
+        };
+        (*th).guarded_sample_count = (seed % sample_rate) + 1;
+    }
+}
+
+pub unsafe fn theap_guarded_set_size_bound(th: *mut ThreadHeap, min: usize, max: usize) {
+    if th.is_null() {
+        return;
+    }
+    (*th).guarded_size_min = min;
+    (*th).guarded_size_max = if min > max { min } else { max };
+}
+
 pub unsafe fn create() -> *mut ThreadHeap {
     let h = meta_alloc();
     if h.is_null() {
         return ptr::null_mut();
     }
     (*h).tid = os::gettid();
+    (*h).subproc = crate::subproc::current_ptr();
+    (*h).guarded_size_max = 1 << 30; // 1 GiB, matching C `mi_option_guarded_max`
     h
 }
 
@@ -365,6 +509,7 @@ pub unsafe fn heap_new() -> *mut Heap {
     (*h).arena = ptr::null_mut();
     (*h).subproc = crate::subproc::current_ptr();
     (*inner).owner = h;
+    (*inner).subproc = (*h).subproc;
     crate::stats::heap_add();
     register_heap(h);
     h
@@ -381,6 +526,10 @@ pub unsafe fn heap_new_in_arena(arena: *mut Arena) -> *mut Heap {
     }
     (*h).arena = arena;
     (*(*h).inner).arena = arena;
+    if !(*arena).subproc.is_null() {
+        (*h).subproc = (*arena).subproc;
+        (*(*h).inner).subproc = (*arena).subproc;
+    }
     h
 }
 
@@ -515,6 +664,7 @@ unsafe fn migrate_thread_heap(src: *mut ThreadHeap, dst: *mut ThreadHeap) {
         list_push(&mut (*dst).huge, page);
         page = next;
     }
+    (*dst).stats.merge_from(&(*src).stats);
 }
 
 pub unsafe fn heap_delete(h: *mut Heap) {
@@ -526,7 +676,9 @@ pub unsafe fn heap_delete(h: *mut Heap) {
     }
     let dest = crate::tls::thread_heap();
     let _g = (*h).lock.lock();
-    migrate_thread_heap((*h).inner, dest);
+    if !dest.is_null() && !(*h).inner.is_null() {
+        migrate_thread_heap((*h).inner, dest);
+    }
     meta_free((*h).inner);
     (*h).inner = ptr::null_mut();
     drop(_g);
@@ -557,16 +709,21 @@ pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
         os::enomem();
         return ptr::null_mut();
     }
-    if size > MAX_ALLOC {
+    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
         os::enomem();
         return ptr::null_mut();
     }
-    let bin = bin::bin_for_size(size);
-    if bin >= crate::BIN_HUGE {
-        malloc_huge(th, size.max(1), 16)
+    if should_guard(th, size) {
+        return malloc_guarded(th, size, 16);
+    }
+    let need = page::padded_need(size);
+    let bin = bin::bin_for_size(need);
+    let p = if bin >= crate::BIN_HUGE {
+        malloc_huge(th, need.max(1), 16)
     } else {
         malloc_bin(th, bin)
-    }
+    };
+    page::finish_alloc(p, page::request_size(size))
 }
 
 pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usize) -> *mut u8 {
@@ -578,33 +735,51 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
         os::einval();
         return ptr::null_mut();
     }
-    if size > MAX_ALLOC {
+    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
         os::enomem();
         return ptr::null_mut();
     }
-    if align >= SLICE_SIZE {
-        return malloc_huge(th, size.max(1), align);
+    if align < SLICE_SIZE && should_guard(th, size) {
+        return malloc_guarded(th, size, align);
     }
-    let mut need = size.max(align);
+    if align >= SLICE_SIZE {
+        return page::finish_alloc(
+            malloc_huge(th, page::padded_need(size).max(1), align),
+            page::request_size(size),
+        );
+    }
+    // Do not use `malloc(size)` for align<=16: 8- and 24-byte classes are not
+    // 16-aligned, and size=0 must still honor the requested alignment.
+    let mut need = page::padded_need(size).max(align);
     loop {
         let bin = bin::bin_for_size(need);
         if bin >= crate::BIN_HUGE {
-            return malloc_huge(th, size.max(align).max(1), align);
+            return page::finish_alloc(
+                malloc_huge(th, need.max(1), align),
+                page::request_size(size),
+            );
         }
         let bs = bin::bin_size(bin);
         if bs % align == 0 {
             let p = malloc_bin(th, bin);
             if p.is_null() || (p as usize) % align == 0 {
-                return p;
+                return page::finish_alloc(p, page::request_size(size));
             }
-            let page = crate::page_map::get(p);
-            crate::stats::malloc_sub((*page).block_size as usize);
-            page::push_local(page, p);
-            return malloc_huge(th, size.max(1), align);
+            let pg = crate::page_map::get(p);
+            crate::stats::malloc_sub((*pg).block_size);
+            (*th).stats.sub_malloc((*pg).block_size);
+            page::push_local(pg, p);
+            return page::finish_alloc(
+                malloc_huge(th, page::padded_need(size).max(1), align),
+                page::request_size(size),
+            );
         }
         need = bs.saturating_add(1);
-        if need > crate::LARGE_MAX_OBJ_SIZE {
-            return malloc_huge(th, size.max(align).max(1), align);
+        if need > LARGE_MAX_OBJ_SIZE {
+            return page::finish_alloc(
+                malloc_huge(th, page::padded_need(size).max(align).max(1), align),
+                page::request_size(size),
+            );
         }
     }
 }
@@ -650,7 +825,10 @@ pub unsafe fn theap_malloc_aligned_at(
     if offset % align == 0 {
         return theap_malloc_aligned(th, size, align);
     }
-    malloc_huge_at(th, size.max(1), align, offset)
+    page::finish_alloc(
+        malloc_huge_at(th, page::padded_need(size).max(1), align, offset),
+        page::request_size(size),
+    )
 }
 
 pub unsafe fn heap_malloc_aligned_at(
@@ -757,6 +935,17 @@ pub unsafe fn force_unlock_meta() {
     crate::subproc::force_unlock();
 }
 
+/// Reset every heap lock after `fork` in the child.
+pub unsafe fn force_unlock_all() {
+    force_unlock_meta();
+    let mut cur = ALL_HEAPS.load(Ordering::Acquire);
+    while !cur.is_null() {
+        let next = (*cur).next_all;
+        (*cur).lock.force_unlock();
+        cur = next;
+    }
+}
+
 pub unsafe fn theap_set_default(theap: *mut Theap) -> *mut Theap {
     crate::tls::set_default_theap(theap)
 }
@@ -850,7 +1039,7 @@ unsafe fn visit_page_blocks(
                 *bits.add(idx / 64) |= 1u64 << (idx % 64);
             }
         }
-        b = (*b).next;
+        b = page::block_next(page, b);
     }
 
     let mut ok = true;
@@ -969,6 +1158,8 @@ pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
     if h.is_null() {
         return;
     }
+    let hb = (*h).heartbeat.fetch_add(1, Ordering::Relaxed) + 1;
+    crate::hooks::deferred_free(force, hb);
     for bin in 0..BIN_COUNT {
         let mut page = (*h).lists[bin];
         while !page.is_null() {
@@ -981,9 +1172,77 @@ pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
                 }
                 page::destroy(page);
             } else if (*page).used == 0 {
-                os::madvise_dontneed((*page).area, (*page).map_size.saturating_sub(SLICE_SIZE / 8));
+                os::madvise_dontneed(
+                    (*page).area,
+                    (*page).map_size.saturating_sub(SLICE_SIZE / 8),
+                );
             }
             page = next;
         }
+    }
+}
+
+pub unsafe fn heap_stats_get(h: *mut Heap, out: *mut crate::stats::Stats) -> bool {
+    if out.is_null() || !heap_is_ok(h) {
+        return false;
+    }
+    if (*h).is_main {
+        crate::stats::fill(out);
+        return true;
+    }
+    crate::stats::clear(out);
+    if !(*h).inner.is_null() {
+        (*(*h).inner).stats.copy_into(out);
+    }
+    true
+}
+
+pub unsafe fn theap_stats_get(th: *mut ThreadHeap, out: *mut crate::stats::Stats) -> bool {
+    if out.is_null() || th.is_null() {
+        return false;
+    }
+    crate::stats::clear(out);
+    (*th).stats.copy_into(out);
+    true
+}
+
+pub unsafe fn heap_stats_add_into(h: *mut Heap, out: *mut crate::stats::Stats) {
+    if h.is_null() || out.is_null() || !heap_is_ok(h) {
+        return;
+    }
+    if (*h).is_main {
+        return;
+    }
+    if !(*h).inner.is_null() {
+        (*(*h).inner).stats.add_into(out);
+    }
+}
+
+pub unsafe fn heap_stats_merge_to_subproc(h: *mut Heap) {
+    if !heap_is_ok(h) || (*h).inner.is_null() || (*h).subproc.is_null() {
+        return;
+    }
+    (*(*h).subproc).stats.merge_from(&(*(*h).inner).stats);
+}
+
+pub unsafe fn destroy_heaps_in_subproc(s: *mut crate::subproc::Subproc) {
+    if s.is_null() {
+        return;
+    }
+    loop {
+        let mut cur = ALL_HEAPS.load(Ordering::Acquire);
+        let mut found: *mut Heap = ptr::null_mut();
+        while !cur.is_null() {
+            let next = (*cur).next_all;
+            if heap_is_ok(cur) && !(*cur).is_main && (*cur).subproc == s {
+                found = cur;
+                break;
+            }
+            cur = next;
+        }
+        if found.is_null() {
+            break;
+        }
+        heap_destroy(found);
     }
 }

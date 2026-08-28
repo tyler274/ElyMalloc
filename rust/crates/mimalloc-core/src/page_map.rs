@@ -69,12 +69,7 @@ unsafe fn get_or_create_l2(l1_idx: usize) -> *mut AtomicPtr<Page> {
     if raw.is_null() {
         return ptr::null_mut();
     }
-    match (*slot).compare_exchange(
-        ptr::null_mut(),
-        raw,
-        Ordering::Release,
-        Ordering::Acquire,
-    ) {
+    match (*slot).compare_exchange(ptr::null_mut(), raw, Ordering::Release, Ordering::Acquire) {
         Ok(_) => raw as *mut AtomicPtr<Page>,
         Err(cur) => {
             os::munmap(raw, bytes);

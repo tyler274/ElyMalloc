@@ -17,6 +17,11 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     mimalloc_core_abort()
 }
 
+/// Debug cdylibs still reference this even with `panic = abort`; LTO strips it in release.
+#[cfg(not(test))]
+#[no_mangle]
+pub extern "C" fn rust_eh_personality() {}
+
 fn mimalloc_core_abort() -> ! {
     unsafe { libc::_exit(1) }
 }
@@ -32,19 +37,16 @@ fn pu8(p: *mut c_void) -> *mut u8 {
 }
 
 type OutputFun = unsafe extern "C" fn(*const libc::c_char, *mut c_void);
-#[allow(dead_code)]
-type ErrorFun = unsafe extern "C" fn(i32, *mut c_void);
 
 static OUT_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static OUT_ARG: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
-#[allow(dead_code)]
-static ERR_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-#[allow(dead_code)]
-static ERR_ARG: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
 
 unsafe fn emit_cstr(out: *mut c_void, arg: *mut c_void, msg: *const libc::c_char) {
     let (f, a) = if out.is_null() {
-        (OUT_FN.load(Ordering::Acquire), OUT_ARG.load(Ordering::Acquire))
+        (
+            OUT_FN.load(Ordering::Acquire),
+            OUT_ARG.load(Ordering::Acquire),
+        )
     } else {
         (out as *mut (), arg)
     };
@@ -87,8 +89,8 @@ pub unsafe extern "C" fn mi_free(p: *mut c_void) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_expand(_p: *mut c_void, _newsize: usize) -> *mut c_void {
-    core::ptr::null_mut()
+pub unsafe extern "C" fn mi_expand(p: *mut c_void, newsize: usize) -> *mut c_void {
+    pvoid(mi::expand(pu8(p), newsize))
 }
 
 #[no_mangle]
@@ -257,7 +259,11 @@ pub unsafe extern "C" fn mi_malloc_good_size(size: usize) -> usize {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_posix_memalign(p: *mut *mut c_void, alignment: usize, size: usize) -> i32 {
+pub unsafe extern "C" fn mi_posix_memalign(
+    p: *mut *mut c_void,
+    alignment: usize,
+    size: usize,
+) -> i32 {
     // POSIX: do not modify `*p` on error (EINVAL / ENOMEM).
     if p.is_null() {
         return libc::EINVAL;
@@ -624,12 +630,18 @@ pub unsafe extern "C" fn mi_heap_collect(heap: *mut mimalloc_core::Heap, force: 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_malloc(heap: *mut mimalloc_core::Heap, size: usize) -> *mut c_void {
+pub unsafe extern "C" fn mi_heap_malloc(
+    heap: *mut mimalloc_core::Heap,
+    size: usize,
+) -> *mut c_void {
     pvoid(mimalloc_core::heap_malloc(heap, size))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_zalloc(heap: *mut mimalloc_core::Heap, size: usize) -> *mut c_void {
+pub unsafe extern "C" fn mi_heap_zalloc(
+    heap: *mut mimalloc_core::Heap,
+    size: usize,
+) -> *mut c_void {
     let p = mimalloc_core::heap_malloc(heap, size);
     if !p.is_null() {
         core::ptr::write_bytes(p, 0, size);
@@ -728,7 +740,10 @@ pub unsafe extern "C" fn mi_heap_of(p: *const c_void) -> *mut mimalloc_core::Hea
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_contains(heap: *const mimalloc_core::Heap, p: *const c_void) -> bool {
+pub unsafe extern "C" fn mi_heap_contains(
+    heap: *const mimalloc_core::Heap,
+    p: *const c_void,
+) -> bool {
     mimalloc_core::heap_contains(heap, p as *const u8)
 }
 
@@ -743,10 +758,16 @@ pub unsafe extern "C" fn mi_check_owned(p: *const c_void) -> bool {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_set_numa_affinity(_heap: *mut mimalloc_core::Heap, _numa_node: i32) {}
+pub unsafe extern "C" fn mi_heap_set_numa_affinity(
+    _heap: *mut mimalloc_core::Heap,
+    _numa_node: i32,
+) {
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_theap(heap: *mut mimalloc_core::Heap) -> *mut mimalloc_core::Theap {
+pub unsafe extern "C" fn mi_heap_theap(
+    heap: *mut mimalloc_core::Heap,
+) -> *mut mimalloc_core::Theap {
     mimalloc_core::heap_theap(heap)
 }
 
@@ -756,7 +777,9 @@ pub unsafe extern "C" fn mi_theap_get_default() -> *mut mimalloc_core::Theap {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_theap_set_default(theap: *mut mimalloc_core::Theap) -> *mut mimalloc_core::Theap {
+pub unsafe extern "C" fn mi_theap_set_default(
+    theap: *mut mimalloc_core::Theap,
+) -> *mut mimalloc_core::Theap {
     mimalloc_core::theap_set_default(theap)
 }
 
@@ -766,12 +789,18 @@ pub unsafe extern "C" fn mi_theap_collect(theap: *mut mimalloc_core::Theap, forc
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_theap_malloc(theap: *mut mimalloc_core::Theap, size: usize) -> *mut c_void {
+pub unsafe extern "C" fn mi_theap_malloc(
+    theap: *mut mimalloc_core::Theap,
+    size: usize,
+) -> *mut c_void {
     pvoid(mimalloc_core::theap_malloc(theap, size))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_theap_zalloc(theap: *mut mimalloc_core::Theap, size: usize) -> *mut c_void {
+pub unsafe extern "C" fn mi_theap_zalloc(
+    theap: *mut mimalloc_core::Theap,
+    size: usize,
+) -> *mut c_void {
     let p = mimalloc_core::theap_malloc(theap, size);
     if !p.is_null() {
         core::ptr::write_bytes(p, 0, size);
@@ -873,18 +902,20 @@ pub unsafe extern "C" fn mi_theap_rezalloc(
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_theap_guarded_set_sample_rate(
-    _theap: *mut mimalloc_core::Theap,
-    _sample_rate: usize,
-    _seed: usize,
+    theap: *mut mimalloc_core::Theap,
+    sample_rate: usize,
+    seed: usize,
 ) {
+    mimalloc_core::theap_guarded_set_sample_rate(theap, sample_rate, seed);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_theap_guarded_set_size_bound(
-    _theap: *mut mimalloc_core::Theap,
-    _min: usize,
-    _max: usize,
+    theap: *mut mimalloc_core::Theap,
+    min: usize,
+    max: usize,
 ) {
+    mimalloc_core::theap_guarded_set_size_bound(theap, min, max);
 }
 
 #[no_mangle]
@@ -960,7 +991,12 @@ pub unsafe extern "C" fn mi_theap_visit_blocks(
     visitor: Option<mimalloc_core::BlockVisitFun>,
     arg: *mut c_void,
 ) -> bool {
-    mimalloc_core::theap_visit_blocks(theap as *mut mimalloc_core::Theap, visit_blocks, visitor, arg)
+    mimalloc_core::theap_visit_blocks(
+        theap as *mut mimalloc_core::Theap,
+        visit_blocks,
+        visitor,
+        arg,
+    )
 }
 
 #[no_mangle]
@@ -1052,7 +1088,13 @@ pub unsafe extern "C" fn mi_reserve_huge_os_pages_at(
     _numa_node: i32,
     _timeout_msecs: usize,
 ) -> i32 {
-    mi_reserve_huge_os_pages_at_ex(pages, _numa_node, _timeout_msecs, false, core::ptr::null_mut())
+    mi_reserve_huge_os_pages_at_ex(
+        pages,
+        _numa_node,
+        _timeout_msecs,
+        false,
+        core::ptr::null_mut(),
+    )
 }
 
 #[no_mangle]
@@ -1090,7 +1132,9 @@ pub unsafe extern "C" fn mi_reserve_huge_os_pages(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_register_deferred_free(_f: *mut c_void, _arg: *mut c_void) {}
+pub unsafe extern "C" fn mi_register_deferred_free(f: *mut c_void, arg: *mut c_void) {
+    mimalloc_core::hooks::register_deferred_free(f, arg);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_register_output(f: *mut c_void, arg: *mut c_void) {
@@ -1100,8 +1144,7 @@ pub unsafe extern "C" fn mi_register_output(f: *mut c_void, arg: *mut c_void) {
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_register_error(f: *mut c_void, arg: *mut c_void) {
-    ERR_FN.store(f as *mut (), Ordering::Release);
-    ERR_ARG.store(arg, Ordering::Release);
+    mimalloc_core::hooks::register_error(f, arg);
 }
 
 #[no_mangle]
@@ -1851,7 +1894,9 @@ pub unsafe extern "C" fn mi_thread_stats_print_out(out: *mut c_void, arg: *mut c
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_stats_merge_to_subproc(_heap: *mut mimalloc_core::Heap) {}
+pub unsafe extern "C" fn mi_heap_stats_merge_to_subproc(heap: *mut mimalloc_core::Heap) {
+    mimalloc_core::heap_stats_merge_to_subproc(heap);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_stats_get_bin_size(bin: usize) -> usize {
@@ -1860,26 +1905,26 @@ pub unsafe extern "C" fn mi_stats_get_bin_size(bin: usize) -> usize {
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_heap_stats_get(
-    _heap: *mut mimalloc_core::Heap,
+    heap: *mut mimalloc_core::Heap,
     stats: *mut mimalloc_core::Stats,
 ) -> bool {
-    mi_stats_get(stats)
+    mimalloc_core::heap_stats_get(heap, stats)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_theap_stats_get(
-    _theap: *mut mimalloc_core::Theap,
+    theap: *mut mimalloc_core::Theap,
     stats: *mut mimalloc_core::Stats,
 ) -> bool {
-    mi_stats_get(stats)
+    mimalloc_core::theap_stats_get(theap, stats)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_subproc_stats_get(
-    _subproc: mimalloc_core::SubprocId,
+    subproc: mimalloc_core::SubprocId,
     stats: *mut mimalloc_core::Stats,
 ) -> bool {
-    mi_stats_get(stats)
+    mimalloc_core::mi_subproc::stats_get(subproc, stats, false)
 }
 
 #[no_mangle]
@@ -1887,7 +1932,7 @@ pub unsafe extern "C" fn mi_subproc_stats_get_exclusive(
     subproc: mimalloc_core::SubprocId,
     stats: *mut mimalloc_core::Stats,
 ) -> bool {
-    mi_subproc_stats_get(subproc, stats)
+    mimalloc_core::mi_subproc::stats_get(subproc, stats, true)
 }
 
 unsafe fn stats_as_json(
@@ -2143,7 +2188,11 @@ pub unsafe extern "C" fn __libc_memalign(alignment: usize, size: usize) -> *mut 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __posix_memalign(p: *mut *mut c_void, alignment: usize, size: usize) -> i32 {
+pub unsafe extern "C" fn __posix_memalign(
+    p: *mut *mut c_void,
+    alignment: usize,
+    size: usize,
+) -> i32 {
     mi_posix_memalign(p, alignment, size)
 }
 
@@ -2270,7 +2319,9 @@ pub unsafe extern "C" fn _ZdaPvSt11align_val_tRKSt9nothrow_t(
 static INIT: extern "C" fn() = mi_ctor;
 
 extern "C" fn process_done_atexit() {
-    unsafe { mi_process_done(); }
+    unsafe {
+        mi_process_done();
+    }
 }
 
 extern "C" fn mi_ctor() {

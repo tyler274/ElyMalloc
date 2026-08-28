@@ -16,8 +16,10 @@ pub struct Arena {
     pub magic: u32,
     pub exclusive: bool,
     pub committed: bool,
+    pub owned: bool,
     pub base: *mut u8,
     pub size: usize,
+    pub subproc: *mut crate::subproc::Subproc,
     bump: AtomicUsize,
     next: *mut Arena,
 }
@@ -75,16 +77,19 @@ pub unsafe fn reserve(
     }
     let a = meta_alloc();
     if a.is_null() {
-        os::munmap(base, size);
+        os::munmap_ex(base, size, commit);
         os::enomem();
         return ptr::null_mut();
     }
     (*a).magic = ARENA_MAGIC;
     (*a).exclusive = exclusive;
     (*a).committed = commit;
+    (*a).owned = true;
     (*a).base = base;
     (*a).size = size;
+    (*a).subproc = crate::subproc::current_ptr();
     (*a).bump = AtomicUsize::new(0);
+    crate::stats::arena_add();
     loop {
         let old = LIST.load(Ordering::Acquire);
         (*a).next = old;
@@ -130,6 +135,7 @@ pub unsafe fn alloc(arena: *mut Arena, size: usize, align: usize) -> *mut u8 {
                     size,
                     libc::PROT_READ | libc::PROT_WRITE,
                 );
+                crate::stats::commit_add(size);
             }
             return p;
         }
@@ -198,8 +204,10 @@ pub unsafe fn manage(
     (*a).magic = ARENA_MAGIC;
     (*a).exclusive = exclusive;
     (*a).committed = is_committed;
+    (*a).owned = false;
     (*a).base = aligned as *mut u8;
     (*a).size = usable;
+    (*a).subproc = crate::subproc::current_ptr();
     (*a).bump = AtomicUsize::new(0);
     loop {
         let old = LIST.load(Ordering::Acquire);
@@ -217,5 +225,21 @@ pub unsafe fn manage(
 pub fn force_unlock() {
     unsafe {
         LOCK.force_unlock();
+    }
+}
+
+/// Unmap arenas created in `subproc` (not `manage_os_memory` adoptions).
+pub unsafe fn destroy_owned_in_subproc(s: *mut crate::subproc::Subproc) {
+    if s.is_null() {
+        return;
+    }
+    let mut cur = LIST.load(Ordering::Acquire);
+    while !cur.is_null() {
+        let next = (*cur).next;
+        if (*cur).magic == ARENA_MAGIC && (*cur).owned && (*cur).subproc == s {
+            (*cur).magic = 0;
+            os::munmap((*cur).base, (*cur).size);
+        }
+        cur = next;
     }
 }

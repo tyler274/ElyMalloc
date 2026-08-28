@@ -6,7 +6,7 @@ use crate::os;
 use crate::page::{self, PAGE_MAGIC};
 use crate::page_map;
 use crate::tls;
-use crate::{align_up, MAX_ALLOC, PTR_SIZE, SLICE_SIZE};
+use crate::{align_up, MAX_ALLOC, PADDING_SIZE, PTR_SIZE};
 use core::ptr::{self, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -56,7 +56,7 @@ pub unsafe fn malloc(size: usize) -> *mut u8 {
         }
     }
     crate::init();
-    if size > MAX_ALLOC {
+    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
         os::enomem();
         return ptr::null_mut();
     }
@@ -64,11 +64,7 @@ pub unsafe fn malloc(size: usize) -> *mut u8 {
     if h.is_null() {
         return ptr::null_mut();
     }
-    let bin = bin::bin_for_size(size);
-    if bin >= crate::BIN_HUGE {
-        return heap::malloc_huge(h, size.max(1), 16);
-    }
-    heap::malloc_bin(h, bin)
+    heap::theap_malloc(h, size)
 }
 
 #[inline]
@@ -114,6 +110,18 @@ pub unsafe fn reallocf(p: *mut u8, newsize: usize) -> *mut u8 {
     q
 }
 
+/// In-place grow/shrink, or NULL if the existing block is too small.
+pub unsafe fn expand(p: *mut u8, newsize: usize) -> *mut u8 {
+    if p.is_null() {
+        return ptr::null_mut();
+    }
+    if usable_size(p as *const u8) >= newsize {
+        p
+    } else {
+        ptr::null_mut()
+    }
+}
+
 pub unsafe fn free(p: *mut u8) {
     if p.is_null() {
         return;
@@ -126,15 +134,24 @@ pub unsafe fn free(p: *mut u8) {
     if (*page).magic != PAGE_MAGIC || !page::contains(page, p) {
         return;
     }
-    crate::stats::malloc_sub(usable_size(p as *const u8));
+    if !(*page).is_guarded() && !page::is_block_start(page, p) {
+        return;
+    }
+    if !page::check_free(page, p) {
+        return;
+    }
+    let usable = page::stat_size(page);
+    crate::stats::malloc_sub(usable);
+    let owner = (*page).heap.load(core::sync::atomic::Ordering::Acquire);
+    if !owner.is_null() {
+        (*owner).stats.sub_malloc(usable);
+    }
     if (*page).capacity == 1 {
-        let owner = (*page).heap.load(core::sync::atomic::Ordering::Acquire);
         heap::unlink_huge(owner, page);
         page::destroy(page);
         return;
     }
     let h = tls::default_theap();
-    let owner = (*page).heap.load(core::sync::atomic::Ordering::Acquire);
     if owner == h && !h.is_null() {
         page::push_local(page, p);
         heap::maybe_retire(h, page);
@@ -156,10 +173,10 @@ pub fn usable_size(p: *const u8) -> usize {
         }
         crate::init();
         let page = page_map::get(p);
-        if page.is_null() || (*page).magic != PAGE_MAGIC || !page::contains(page, p) {
+        if page.is_null() || (*page).magic != PAGE_MAGIC {
             return 0;
         }
-        (*page).block_size as usize
+        page::usable_size(page, p)
     }
 }
 
@@ -174,7 +191,7 @@ pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
         os::einval();
         return ptr::null_mut();
     }
-    if size > MAX_ALLOC {
+    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
         os::enomem();
         return ptr::null_mut();
     }
@@ -182,34 +199,8 @@ pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
     if h.is_null() {
         return ptr::null_mut();
     }
-    if align >= SLICE_SIZE {
-        return heap::malloc_huge(h, size.max(1), align);
-    }
-    // Do not use `malloc(size)` for align<=16: 8- and 24-byte classes are not
-    // 16-aligned, and size=0 must still honor the requested alignment.
-    let mut need = size.max(align);
-    loop {
-        let bin = bin::bin_for_size(need);
-        if bin >= crate::BIN_HUGE {
-            return heap::malloc_huge(h, size.max(align), align);
-        }
-        let bs = bin::bin_size(bin);
-        if bs % align == 0 {
-            let p = heap::malloc_bin(h, bin);
-            if p.is_null() || (p as usize) % align == 0 {
-                return p;
-            }
-            free(p);
-            return heap::malloc_huge(h, size.max(1), align);
-        }
-        need = bs.saturating_add(1);
-        if need > LARGE_MAX_CHECK {
-            return heap::malloc_huge(h, size.max(align), align);
-        }
-    }
+    heap::theap_malloc_aligned(h, size, align)
 }
-
-const LARGE_MAX_CHECK: usize = crate::LARGE_MAX_OBJ_SIZE;
 
 pub unsafe fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> i32 {
     if out.is_null() {
@@ -327,7 +318,7 @@ pub unsafe fn malloc_aligned_at(size: usize, align: usize, offset: usize) -> *mu
     if h.is_null() {
         return ptr::null_mut();
     }
-    heap::malloc_huge_at(h, size.max(1), align, offset)
+    heap::theap_malloc_aligned_at(h, size, align, offset)
 }
 
 pub unsafe fn rezalloc(p: *mut u8, newsize: usize) -> *mut u8 {
@@ -402,20 +393,23 @@ pub unsafe fn rezalloc_aligned_at(
 pub unsafe fn umalloc(size: usize, block_size: *mut usize) -> *mut u8 {
     let p = malloc(size);
     if !block_size.is_null() {
-        *block_size = if p.is_null() { 0 } else { usable_size(p as *const u8) };
+        *block_size = if p.is_null() {
+            0
+        } else {
+            usable_size(p as *const u8)
+        };
     }
     p
 }
 
-pub unsafe fn urealloc(
-    p: *mut u8,
-    newsize: usize,
-    pre: *mut usize,
-    post: *mut usize,
-) -> *mut u8 {
+pub unsafe fn urealloc(p: *mut u8, newsize: usize, pre: *mut usize, post: *mut usize) -> *mut u8 {
     if p.is_null() {
         let q = malloc(newsize);
-        let sz = if q.is_null() { 0 } else { usable_size(q as *const u8) };
+        let sz = if q.is_null() {
+            0
+        } else {
+            usable_size(q as *const u8)
+        };
         if !pre.is_null() {
             *pre = 0;
         }
@@ -428,7 +422,8 @@ pub unsafe fn urealloc(
     let page = page_map::get(p);
     if page.is_null()
         || (*page).magic != PAGE_MAGIC
-        || !page::is_block_start(page, p)
+        || (!(*page).is_guarded() && !page::is_block_start(page, p))
+        || ((*page).is_guarded() && !page::contains(page, p))
     {
         if !pre.is_null() {
             *pre = 0;
@@ -444,7 +439,11 @@ pub unsafe fn urealloc(
     }
     let q = realloc(p, newsize);
     if !post.is_null() {
-        *post = if q.is_null() { 0 } else { usable_size(q as *const u8) };
+        *post = if q.is_null() {
+            0
+        } else {
+            usable_size(q as *const u8)
+        };
     }
     q
 }
@@ -457,7 +456,10 @@ pub unsafe fn ufree(p: *mut u8, block_size: *mut usize) {
     free(p);
 }
 
-pub unsafe fn realpath(fname: *const libc::c_char, resolved: *mut libc::c_char) -> *mut libc::c_char {
+pub unsafe fn realpath(
+    fname: *const libc::c_char,
+    resolved: *mut libc::c_char,
+) -> *mut libc::c_char {
     const PATH_MAX: usize = 4096;
     if fname.is_null() {
         os::einval();

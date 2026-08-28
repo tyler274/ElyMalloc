@@ -61,12 +61,14 @@ pub fn bin_size(bin: usize) -> usize {
 
 #[inline]
 pub fn good_size(size: usize) -> usize {
-    if size > LARGE_MAX_OBJ_SIZE {
-        crate::align_up(size, crate::os::page_size())
+    let size = if size == 0 { crate::PTR_SIZE } else { size };
+    let need = size.saturating_add(crate::PADDING_SIZE);
+    if need > LARGE_MAX_OBJ_SIZE {
+        crate::align_up(need, crate::os::page_size())
     } else {
-        let bin = bin_for_size(size);
+        let bin = bin_for_size(need);
         if bin >= BIN_HUGE {
-            crate::align_up(size, crate::os::page_size())
+            crate::align_up(need, crate::os::page_size())
         } else {
             bin_size(bin)
         }

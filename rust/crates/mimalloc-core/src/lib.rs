@@ -7,8 +7,9 @@ pub mod alloc;
 pub mod arena;
 mod bin;
 mod heap;
-mod os;
+pub mod hooks;
 pub mod options;
+mod os;
 mod page;
 mod page_map;
 mod spin;
@@ -26,6 +27,8 @@ pub const LARGE_PAGE_SIZE: usize = PTR_SIZE * MEDIUM_PAGE_SIZE;
 pub const LARGE_MAX_OBJ_SIZE: usize = LARGE_PAGE_SIZE / 8;
 pub const BIN_HUGE: usize = 73;
 pub const MAX_ALLOC: usize = isize::MAX as usize;
+/// 8-byte `{canary, delta}` trailer at the end of every block (C `MI_PADDING`).
+pub const PADDING_SIZE: usize = 8;
 pub const MI_MALLOC_VERSION: i32 = 30500;
 
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
@@ -62,24 +65,33 @@ pub fn init() {
     INIT_DONE.store(true, Ordering::Release);
 }
 
+/// Child after `fork`: locks may have been held by threads that do not exist here.
+pub(crate) unsafe fn fork_child() {
+    INIT_LOCK.force_unlock();
+    tls::force_unlock();
+    heap::force_unlock_all();
+}
+
 pub use alloc::{
-    aligned_alloc, calloc, collect, free, good_size, malloc, malloc_aligned, malloc_aligned_at,
-    manage_os_memory_ex, memalign, posix_memalign, pvalloc, realloc, reallocarr, reallocarray,
-    reallocf, realpath, reserve_os_memory, reserve_os_memory_ex, rezalloc, rezalloc_aligned,
-    rezalloc_aligned_at, strdup, strndup, ufree, umalloc, urealloc, usable_size, valloc, VERSION,
+    aligned_alloc, calloc, collect, expand, free, good_size, malloc, malloc_aligned,
+    malloc_aligned_at, manage_os_memory_ex, memalign, posix_memalign, pvalloc, realloc, reallocarr,
+    reallocarray, reallocf, realpath, reserve_os_memory, reserve_os_memory_ex, rezalloc,
+    rezalloc_aligned, rezalloc_aligned_at, strdup, strndup, ufree, umalloc, urealloc, usable_size,
+    valloc, VERSION,
 };
 pub use arena::{self as mi_arena, Arena};
 pub use heap::{
     any_heap_contains, heap_collect, heap_contains, heap_delete, heap_destroy, heap_main,
     heap_malloc, heap_malloc_aligned, heap_malloc_aligned_at, heap_new, heap_new_in_arena, heap_of,
-    heap_theap, heap_visit_abandoned_blocks, heap_visit_blocks, theap_collect, theap_get_default,
-    theap_malloc, theap_malloc_aligned, theap_malloc_aligned_at, theap_set_default,
-    theap_visit_blocks, BlockVisitFun, Heap, HeapArea, Theap,
+    heap_stats_get, heap_stats_merge_to_subproc, heap_theap, heap_visit_abandoned_blocks,
+    heap_visit_blocks, theap_collect, theap_get_default, theap_guarded_set_sample_rate,
+    theap_guarded_set_size_bound, theap_malloc, theap_malloc_aligned, theap_malloc_aligned_at,
+    theap_set_default, theap_stats_get, theap_visit_blocks, BlockVisitFun, Heap, HeapArea, Theap,
 };
-pub use tls::thread_done;
-pub use subproc::{self as mi_subproc, Subproc, SubprocId};
 pub use options as mi_options;
 pub use stats::{self as mi_stats, Stats};
+pub use subproc::{self as mi_subproc, Subproc, SubprocId};
+pub use tls::thread_done;
 
 #[cfg(test)]
 mod tests {
@@ -406,14 +418,7 @@ mod tests {
             assert!(!raw.is_null());
             let mut id: *mut crate::Arena = core::ptr::null_mut();
             assert!(alloc::manage_os_memory_ex(
-                raw,
-                size,
-                true,
-                false,
-                false,
-                -1,
-                true,
-                &mut id
+                raw, size, true, false, false, -1, true, &mut id
             ));
             assert!(!id.is_null());
             let h = crate::heap_new_in_arena(id);
@@ -421,6 +426,286 @@ mod tests {
             assert!(!p.is_null());
             assert!(crate::mi_arena::contains(id, p as *const u8));
             crate::heap_destroy(h);
+        }
+    }
+
+    #[test]
+    fn expand_fits_or_fails_in_place() {
+        unsafe {
+            let p = alloc::malloc(32);
+            assert!(!p.is_null());
+            assert_eq!(alloc::expand(p, 8), p);
+            assert_eq!(alloc::expand(p, 32), p);
+            assert!(alloc::expand(p, 1 << 20).is_null());
+            alloc::free(p);
+            assert!(alloc::expand(core::ptr::null_mut(), 16).is_null());
+        }
+    }
+
+    #[test]
+    fn deferred_free_runs_on_collect() {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn on_defer(_force: bool, _hb: u64, _arg: *mut core::ffi::c_void) {
+            HITS.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+        unsafe {
+            crate::hooks::register_deferred_free(
+                on_defer as *mut core::ffi::c_void,
+                core::ptr::null_mut(),
+            );
+            HITS.store(0, AtomicOrdering::Relaxed);
+            alloc::collect(true);
+            assert!(HITS.load(AtomicOrdering::Relaxed) >= 1);
+            crate::hooks::register_deferred_free(core::ptr::null_mut(), core::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn error_handler_on_overflow() {
+        use core::sync::atomic::{AtomicI32, Ordering as AtomicOrdering};
+        static LAST: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C" fn on_err(err: i32, _arg: *mut core::ffi::c_void) {
+            LAST.store(err, AtomicOrdering::Relaxed);
+        }
+        unsafe {
+            crate::hooks::register_error(on_err as *mut core::ffi::c_void, core::ptr::null_mut());
+            LAST.store(0, AtomicOrdering::Relaxed);
+            let p = alloc::calloc(usize::MAX, usize::MAX);
+            assert!(p.is_null());
+            assert_eq!(LAST.load(AtomicOrdering::Relaxed), libc::ENOMEM);
+            crate::hooks::register_error(core::ptr::null_mut(), core::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn debug_fill_uninit_and_freed() {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        unsafe {
+            let n = 64usize;
+            let p = alloc::malloc(n);
+            assert!(!p.is_null());
+            for i in 0..n {
+                assert_eq!(*p.add(i), crate::page::DEBUG_UNINIT);
+            }
+            alloc::free(p);
+            let skip = core::mem::size_of::<*mut u8>();
+            for i in skip..n {
+                assert_eq!(*p.add(i), crate::page::DEBUG_FREED);
+            }
+        }
+    }
+
+    #[test]
+    fn stats_track_mmap_and_malloc() {
+        unsafe {
+            let p = alloc::malloc(128);
+            assert!(!p.is_null());
+            let mut s: crate::Stats = core::mem::zeroed();
+            crate::mi_stats::fill(&mut s);
+            assert!(s.mmap_calls.total >= 1);
+            assert!(s.reserved.current > 0);
+            assert!(s.committed.current > 0);
+            assert!(s.malloc_requested.current > 0);
+            alloc::free(p);
+        }
+    }
+
+    #[test]
+    fn heap_stats_are_per_heap() {
+        unsafe {
+            let h = crate::heap_new();
+            assert!(!h.is_null());
+            for _ in 0..8 {
+                let p = crate::heap_malloc(h, 64);
+                assert!(!p.is_null());
+            }
+            let mut hs: crate::Stats = core::mem::zeroed();
+            assert!(crate::heap_stats_get(h, &mut hs));
+            assert!(hs.malloc_normal_count.total >= 8);
+            assert!(hs.malloc_requested.current > 0);
+            let t = crate::heap_theap(h);
+            let mut ts: crate::Stats = core::mem::zeroed();
+            assert!(crate::theap_stats_get(t, &mut ts));
+            assert_eq!(ts.malloc_normal_count.total, hs.malloc_normal_count.total);
+            crate::heap_destroy(h);
+        }
+    }
+
+    #[test]
+    fn subproc_destroy_isolates_heaps() {
+        unsafe {
+            let a = crate::mi_subproc::new();
+            crate::mi_subproc::add_current_thread(a);
+            let h = crate::heap_new();
+            assert!(!h.is_null());
+            let p = crate::heap_malloc(h, 32);
+            assert!(!p.is_null());
+            crate::mi_subproc::destroy(a);
+            let mut n = 0usize;
+            unsafe extern "C" fn count(
+                heap: *mut crate::Heap,
+                arg: *mut core::ffi::c_void,
+            ) -> bool {
+                if !heap.is_null() {
+                    *(arg as *mut usize) += 1;
+                }
+                true
+            }
+            crate::mi_subproc::visit_heaps(
+                a,
+                Some(count),
+                &mut n as *mut usize as *mut core::ffi::c_void,
+            );
+            assert_eq!(n, 0);
+            let p2 = alloc::malloc(16);
+            assert!(!p2.is_null());
+            alloc::free(p2);
+        }
+    }
+
+    #[test]
+    fn padding_usable_size_is_exact() {
+        unsafe {
+            let p = alloc::malloc(64);
+            assert!(!p.is_null());
+            assert_eq!(alloc::usable_size(p), 64);
+            let z = alloc::malloc(0);
+            assert!(!z.is_null());
+            assert_eq!(alloc::usable_size(z), crate::PTR_SIZE);
+            alloc::free(z);
+            alloc::free(p);
+        }
+    }
+
+    #[test]
+    fn padding_reports_overflow_and_double_free() {
+        use core::sync::atomic::{AtomicI32, Ordering as AtomicOrdering};
+        static LAST: AtomicI32 = AtomicI32::new(0);
+        unsafe extern "C" fn on_err(err: i32, _arg: *mut core::ffi::c_void) {
+            LAST.store(err, AtomicOrdering::Relaxed);
+        }
+        unsafe {
+            crate::hooks::register_error(on_err as *mut core::ffi::c_void, core::ptr::null_mut());
+            LAST.store(0, AtomicOrdering::Relaxed);
+            let p = alloc::malloc(16);
+            assert!(!p.is_null());
+            let page = crate::page_map::get(p);
+            assert!(!page.is_null());
+            let smash = (*page).block_size.saturating_sub(16);
+            if smash != 0 {
+                core::ptr::write_bytes(p.add(16), 0xFF, smash);
+            }
+            alloc::free(p);
+            assert_eq!(LAST.load(AtomicOrdering::Relaxed), libc::EFAULT);
+
+            LAST.store(0, AtomicOrdering::Relaxed);
+            let q = alloc::malloc(32);
+            alloc::free(q);
+            alloc::free(q);
+            assert_eq!(LAST.load(AtomicOrdering::Relaxed), libc::EAGAIN);
+            crate::hooks::register_error(core::ptr::null_mut(), core::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn guarded_sample_allocates_apart() {
+        unsafe {
+            crate::init();
+            let th = crate::theap_get_default();
+            crate::theap_guarded_set_size_bound(th, 0, usize::MAX);
+            crate::theap_guarded_set_sample_rate(th, 1, 1);
+            let a = alloc::malloc(32);
+            let b = alloc::malloc(32);
+            assert!(!a.is_null() && !b.is_null());
+            assert!((a as usize).abs_diff(b as usize) > 4096);
+            assert!(alloc::usable_size(a) >= 32);
+            core::ptr::write_bytes(a, 0xAB, 32);
+            core::ptr::write_bytes(b, 0xCD, 32);
+            alloc::free(a);
+            alloc::free(b);
+            crate::theap_guarded_set_sample_rate(th, 0, 0);
+        }
+    }
+
+    fn prot_at(addr: usize) -> Option<std::string::String> {
+        let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+        for line in maps.lines() {
+            let mut it = line.split_whitespace();
+            let range = it.next()?;
+            let perms = it.next()?;
+            let mut r = range.split('-');
+            let start = usize::from_str_radix(r.next()?, 16).ok()?;
+            let end = usize::from_str_radix(r.next()?, 16).ok()?;
+            if addr >= start && addr < end {
+                return Some(std::string::String::from(perms));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn invalid_free_is_ignored() {
+        unsafe {
+            let mut stack = 0u8;
+            alloc::free(core::ptr::null_mut());
+            alloc::free(0x10 as *mut u8);
+            alloc::free(&mut stack);
+            let p = alloc::malloc(64);
+            assert!(!p.is_null());
+            alloc::free(p.add(8));
+            assert_eq!(alloc::usable_size(p.add(8)), 0);
+            core::ptr::write_bytes(p, 0xAB, 64);
+            alloc::free(p);
+        }
+    }
+
+    #[test]
+    fn metadata_guard_page_is_inaccessible() {
+        unsafe {
+            let p = alloc::malloc(32);
+            assert!(!p.is_null());
+            let page = crate::page_map::get(p);
+            assert!(!page.is_null());
+            let base = (*page).map_base as usize;
+            let os = crate::os::page_size();
+            let guard = prot_at(base).expect("map_base in maps");
+            assert!(
+                !guard.contains('r') && !guard.contains('w'),
+                "leading meta guard should be PROT_NONE, got {guard}"
+            );
+            let meta = prot_at(base + os).expect("page header in maps");
+            assert!(
+                meta.contains('r') && meta.contains('w'),
+                "page header should be RW, got {meta}"
+            );
+            alloc::free(p);
+        }
+    }
+
+    #[test]
+    fn free_list_is_not_strictly_sequential() {
+        unsafe {
+            let mut v: Vec<*mut u8> = Vec::new();
+            for _ in 0..32 {
+                let p = alloc::malloc(16);
+                assert!(!p.is_null());
+                v.push(p);
+            }
+            let page = crate::page_map::get(v[0]);
+            let bs = (*page).block_size;
+            let sequential = v.windows(2).all(|w| {
+                (w[1] as usize).abs_diff(w[0] as usize) == bs
+            });
+            assert!(
+                !sequential,
+                "secure free-list init should not hand out 32 adjacent blocks in order"
+            );
+            for p in v {
+                alloc::free(p);
+            }
         }
     }
 }

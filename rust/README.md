@@ -1,4 +1,4 @@
-# Rust mimalloc rewrite (Phase 1)
+# Rust mimalloc rewrite
 
 Pure-Rust allocator with a C ABI intended as a drop-in replacement for C mimalloc.
 
@@ -32,3 +32,13 @@ The flake overlay replaces `pkgs.mimalloc` with this library:
 ```
 
 `environment.memoryAllocator.provider = "mimalloc"` preloads `${pkgs.mimalloc}/lib/libmimalloc.so`.
+
+## Secure mitigations
+
+Always on (inspired by C `-DMI_SECURE=ON`): encoded free lists, padding canaries, double-free detection, randomized page free lists, guard pages around page metadata, and ASLR-style gaps between OS mappings. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`.
+
+## Later
+
+- Stress-test this library as a drop-in malloc (`LD_PRELOAD` / NixOS `memoryAllocator`) against the **GCC, LLVM, and rustc test suites**.
+- Debug fill in release builds.
+- musl / aarch64.

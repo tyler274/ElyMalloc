@@ -126,8 +126,7 @@ unsafe extern "C" fn atfork_prepare() {}
 unsafe extern "C" fn atfork_parent() {}
 
 unsafe extern "C" fn atfork_child() {
-    force_unlock();
-    heap::force_unlock_meta();
+    crate::fork_child();
 }
 
 pub fn register_atfork() {
