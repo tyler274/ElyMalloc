@@ -127,8 +127,8 @@ pub unsafe extern "C" fn mi_good_size(size: usize) -> usize {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_free_size(p: *mut c_void, _size: usize) {
-    mi_free(p);
+pub unsafe extern "C" fn mi_free_size(p: *mut c_void, size: usize) {
+    mi::free_size(pu8(p), size);
 }
 
 #[no_mangle]
@@ -758,10 +758,8 @@ pub unsafe extern "C" fn mi_check_owned(p: *const c_void) -> bool {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_heap_set_numa_affinity(
-    _heap: *mut mimalloc_core::Heap,
-    _numa_node: i32,
-) {
+pub unsafe extern "C" fn mi_heap_set_numa_affinity(heap: *mut mimalloc_core::Heap, numa_node: i32) {
+    mimalloc_core::heap_set_numa_affinity(heap, numa_node);
 }
 
 #[no_mangle]
@@ -1148,11 +1146,13 @@ pub unsafe extern "C" fn mi_register_error(f: *mut c_void, arg: *mut c_void) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_thread_set_in_threadpool() {}
+pub unsafe extern "C" fn mi_thread_set_in_threadpool() {
+    mimalloc_core::theap_set_in_threadpool(mimalloc_core::theap_get_default());
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_collect_reduce(_target: usize) {
-    mi_collect(true);
+pub unsafe extern "C" fn mi_collect_reduce(target_thread_owned: usize) {
+    mimalloc_core::collect_reduce(target_thread_owned);
 }
 
 #[no_mangle]
@@ -1274,9 +1274,6 @@ pub unsafe extern "C" fn mi_options_print_out(out: *mut c_void, arg: *mut c_void
         emit_cstr(out, arg, buf.as_ptr());
     }
 }
-
-#[no_mangle]
-pub unsafe extern "C" fn mi_arenas_print() {}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_reallocn(p: *mut c_void, count: usize, size: usize) -> *mut c_void {
@@ -1634,17 +1631,7 @@ pub unsafe extern "C" fn mi_free_aligned(p: *mut c_void, _alignment: usize) {
     mi_free(p);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn mi_stats_print(out: *mut c_void) {
-    mi_stats_print_out(out, core::ptr::null_mut());
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn mi_stats_print_out(out: *mut c_void, arg: *mut c_void) {
-    let mut stats = core::mem::zeroed();
-    if !mi_stats_get(&mut stats) {
-        return;
-    }
+unsafe fn print_stats(stats: &mimalloc_core::Stats, out: *mut c_void, arg: *mut c_void) {
     let mut buf = [0i8; 256];
     libc::snprintf(
         buf.as_mut_ptr(),
@@ -1659,6 +1646,20 @@ pub unsafe extern "C" fn mi_stats_print_out(out: *mut c_void, arg: *mut c_void) 
         stats.malloc_normal_count.total as libc::c_longlong,
     );
     emit_cstr(out, arg, buf.as_ptr());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_stats_print(out: *mut c_void) {
+    mi_stats_print_out(out, core::ptr::null_mut());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_stats_print_out(out: *mut c_void, arg: *mut c_void) {
+    let mut stats = core::mem::zeroed();
+    if !mi_stats_get(&mut stats) {
+        return;
+    }
+    print_stats(&stats, out, arg);
 }
 
 #[no_mangle]
@@ -1680,8 +1681,59 @@ pub unsafe extern "C" fn mi_options_print() {
     mi_options_print_out(core::ptr::null_mut(), core::ptr::null_mut());
 }
 
+#[repr(C)]
+struct ArenaPrintCtx {
+    out: *mut c_void,
+    arg: *mut c_void,
+    n: usize,
+}
+
+unsafe extern "C" fn arena_print_visitor(a: *mut mimalloc_core::Arena, arg: *mut c_void) -> bool {
+    let ctx = &mut *(arg as *mut ArenaPrintCtx);
+    let exclusive = if (*a).exclusive {
+        b", exclusive\0".as_ptr()
+    } else {
+        b"\0".as_ptr()
+    };
+    let owned = if (*a).owned {
+        b", owned\0".as_ptr()
+    } else {
+        b"\0".as_ptr()
+    };
+    let mut buf = [0i8; 256];
+    libc::snprintf(
+        buf.as_mut_ptr(),
+        buf.len(),
+        b"arena %zu at %p: %zu bytes%s%s, numa: %i\n\0".as_ptr() as *const libc::c_char,
+        ctx.n,
+        a,
+        (*a).size,
+        exclusive as *const libc::c_char,
+        owned as *const libc::c_char,
+        (*a).numa_node,
+    );
+    emit_cstr(ctx.out, ctx.arg, buf.as_ptr());
+    ctx.n += 1;
+    true
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn mi_debug_show_arenas() {}
+pub unsafe extern "C" fn mi_debug_show_arenas() {
+    mi_arenas_print();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_arenas_print() {
+    let mut ctx = ArenaPrintCtx {
+        out: core::ptr::null_mut(),
+        arg: core::ptr::null_mut(),
+        n: 0,
+    };
+    mimalloc_core::mi_arena::visit_all(
+        arena_print_visitor,
+        &mut ctx as *mut ArenaPrintCtx as *mut c_void,
+    );
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_option_set(option: i32, value: libc::c_long) {
@@ -1782,8 +1834,8 @@ pub unsafe extern "C" fn mi_aligned_offset_recalloc(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_free_size_aligned(p: *mut c_void, _size: usize, _alignment: usize) {
-    mi_free(p);
+pub unsafe extern "C" fn mi_free_size_aligned(p: *mut c_void, size: usize, alignment: usize) {
+    mi::free_size_aligned(pu8(p), size, alignment);
 }
 
 #[no_mangle]
@@ -1878,19 +1930,25 @@ pub unsafe extern "C" fn mi_manage_memory(
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_unsafe_heap_page_is_under_utilized(
-    _heap: *mut mimalloc_core::Heap,
-    _p: *mut c_void,
-    _perc_threshold: usize,
+    heap: *mut mimalloc_core::Heap,
+    p: *mut c_void,
+    perc_threshold: usize,
 ) -> bool {
-    false
+    mimalloc_core::page_is_under_utilized(heap, p as *const u8, perc_threshold)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mi_stats_merge() {}
+pub unsafe extern "C" fn mi_stats_merge() {
+    mimalloc_core::stats_merge();
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_thread_stats_print_out(out: *mut c_void, arg: *mut c_void) {
-    mi_stats_print_out(out, arg);
+    let mut stats = core::mem::zeroed();
+    if !mi_theap_stats_get(mi_theap_get_default(), &mut stats) {
+        return;
+    }
+    print_stats(&stats, out, arg);
 }
 
 #[no_mangle]

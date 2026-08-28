@@ -26,6 +26,7 @@ pub struct ThreadHeap {
     pub guarded_sample_count: usize,
     pub guarded_size_min: usize,
     pub guarded_size_max: usize,
+    pub in_threadpool: bool,
 }
 
 pub type Theap = ThreadHeap;
@@ -42,6 +43,7 @@ pub struct Heap {
     next_free: *mut Heap,
     next_all: *mut Heap,
     subproc: *mut crate::subproc::Subproc,
+    numa_node: i32,
 }
 
 static mut HEAP_BUMP: *mut u8 = ptr::null_mut();
@@ -240,6 +242,11 @@ fn list_remove(head: &mut *mut Page, page: *mut Page) {
 }
 
 unsafe fn reclaim_abandoned(h: *mut ThreadHeap, bin: usize) -> *mut Page {
+    // C skips arbitrary reclaim when the thread is in a pool (blocked
+    // workers should not absorb abandoned pages from other tasks).
+    if (*h).in_threadpool {
+        return ptr::null_mut();
+    }
     let page = abandoned(bin).swap(ptr::null_mut(), Ordering::AcqRel);
     if page.is_null() {
         return ptr::null_mut();
@@ -421,11 +428,8 @@ unsafe fn malloc_guarded(h: *mut ThreadHeap, size: usize, align: usize) -> *mut 
     let os = os::page_size();
     let align = if align == 0 { 16 } else { align };
     let obj = align_up(page::request_size(size), 16.max(align).min(os));
-    let payload = align_up(
-        obj.saturating_add(core::mem::size_of::<page::Block>()),
-        os,
-    )
-    .saturating_add(os);
+    let payload =
+        align_up(obj.saturating_add(core::mem::size_of::<page::Block>()), os).saturating_add(os);
     let page = page::create_huge(payload, os, 0, (*h).arena);
     if page.is_null() {
         os::enomem();
@@ -463,9 +467,7 @@ pub unsafe fn theap_guarded_set_sample_rate(th: *mut ThreadHeap, sample_rate: us
     (*th).guarded_sample_count = sample_rate;
     if sample_rate > 1 {
         let seed = if seed == 0 {
-            (*th).heartbeat.load(Ordering::Relaxed) as usize
-                ^ (*th).tid as usize
-                ^ (th as usize)
+            (*th).heartbeat.load(Ordering::Relaxed) as usize ^ (*th).tid as usize ^ (th as usize)
         } else {
             seed
         };
@@ -508,6 +510,7 @@ pub unsafe fn heap_new() -> *mut Heap {
     (*h).inner = inner;
     (*h).arena = ptr::null_mut();
     (*h).subproc = crate::subproc::current_ptr();
+    (*h).numa_node = -1;
     (*inner).owner = h;
     (*inner).subproc = (*h).subproc;
     crate::stats::heap_add();
@@ -548,6 +551,7 @@ pub unsafe fn heap_main() -> *mut Heap {
     (*h).inner = ptr::null_mut();
     (*h).arena = ptr::null_mut();
     (*h).subproc = crate::subproc::main().ptr;
+    (*h).numa_node = -1;
     match MAIN_HEAP.compare_exchange(ptr::null_mut(), h, Ordering::Release, Ordering::Acquire) {
         Ok(_) => {
             register_heap(h);
@@ -1222,7 +1226,97 @@ pub unsafe fn heap_stats_merge_to_subproc(h: *mut Heap) {
     if !heap_is_ok(h) || (*h).inner.is_null() || (*h).subproc.is_null() {
         return;
     }
-    (*(*h).subproc).stats.merge_from(&(*(*h).inner).stats);
+    (*(*h).subproc).stats.take_from(&(*(*h).inner).stats);
+}
+
+pub unsafe fn heap_set_numa_affinity(h: *mut Heap, numa_node: i32) {
+    crate::init();
+    let h = if h.is_null() { heap_main() } else { h };
+    if !heap_is_ok(h) {
+        return;
+    }
+    (*h).numa_node = if numa_node < 0 { -1 } else { numa_node };
+}
+
+pub unsafe fn heap_numa_node(h: *const Heap) -> i32 {
+    if !heap_is_ok(h) {
+        return -1;
+    }
+    (*h).numa_node
+}
+
+pub unsafe fn theap_set_in_threadpool(th: *mut ThreadHeap) {
+    if th.is_null() {
+        return;
+    }
+    (*th).in_threadpool = true;
+}
+
+/// C `mi_unsafe_heap_page_is_under_utilized`: skip the current-queue head
+/// (list `prev == NULL`) to avoid immediate thrashing.
+pub unsafe fn page_is_under_utilized(heap: *mut Heap, p: *const u8, perc_threshold: usize) -> bool {
+    if p.is_null() {
+        return false;
+    }
+    crate::init();
+    let page = crate::page_map::get(p);
+    if page.is_null() || (*page).magic != page::PAGE_MAGIC {
+        return false;
+    }
+    if (*page).used == (*page).capacity {
+        return false;
+    }
+    if (*page).prev.is_null() {
+        return false;
+    }
+    let th = (*page).heap.load(Ordering::Acquire);
+    if th.is_null() {
+        return false;
+    }
+    let page_heap = if (*th).owner.is_null() || (*(*th).owner).magic != HEAP_MAGIC {
+        heap_main()
+    } else {
+        (*th).owner
+    };
+    if page_heap.is_null() {
+        return false;
+    }
+    if !heap.is_null() && heap != page_heap {
+        return false;
+    }
+    let cap = (*page).capacity as usize;
+    if cap == 0 {
+        return false;
+    }
+    if perc_threshold >= 100 {
+        return true;
+    }
+    perc_threshold >= (100 * (*page).used as usize) / cap
+}
+
+/// Force-collect every heap (inspired `mi_collect_reduce`).
+pub unsafe fn collect_all(force: bool) {
+    crate::init();
+    collect_heap(crate::tls::default_theap(), force);
+    let mut cur = ALL_HEAPS.load(Ordering::Acquire);
+    while !cur.is_null() {
+        let next = (*cur).next_all;
+        if heap_is_ok(cur) {
+            heap_collect(cur, force);
+        }
+        cur = next;
+    }
+}
+
+/// Merge the current thread's theap stats into its subprocess and reset.
+/// Matches C `mi_stats_merge` (thread-local, not every heap).
+pub unsafe fn stats_merge() {
+    crate::init();
+    let th = crate::tls::default_theap();
+    if th.is_null() || (*th).subproc.is_null() {
+        return;
+    }
+    (*(*th).subproc).stats.take_from(&(*th).stats);
 }
 
 pub unsafe fn destroy_heaps_in_subproc(s: *mut crate::subproc::Subproc) {

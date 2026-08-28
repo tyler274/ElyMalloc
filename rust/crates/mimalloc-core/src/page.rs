@@ -327,9 +327,7 @@ pub unsafe fn create_huge(
     let payload = size.max(16);
     let (lead, meta, prefix) = meta_prefix(16);
     let total = align_up(
-        prefix
-            .saturating_add(align)
-            .saturating_add(payload),
+        prefix.saturating_add(align).saturating_add(payload),
         SLICE_SIZE.max(align.min(SLICE_SIZE * 16)),
     );
     let map_align = align.max(SLICE_SIZE);
@@ -680,7 +678,11 @@ pub unsafe fn arm_guarded(page: *mut Page, obj_size: usize) -> *mut u8 {
     }
     let os = os::page_size();
     let bs = (*page).block_size;
-    if bs < obj_size.saturating_add(os).saturating_add(core::mem::size_of::<Block>()) {
+    if bs
+        < obj_size
+            .saturating_add(os)
+            .saturating_add(core::mem::size_of::<Block>())
+    {
         return ptr::null_mut();
     }
     (*page).set_guarded();

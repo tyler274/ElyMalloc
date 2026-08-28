@@ -213,28 +213,54 @@ impl AllocStats {
     }
 
     pub fn merge_from(&self, other: &AllocStats) {
-        let n = other.malloc_current.load(Ordering::Relaxed);
-        if n != 0 {
-            peak_add(
-                &self.malloc_current,
-                &self.malloc_peak,
-                Some(&self.malloc_total),
-                n,
-            );
+        if core::ptr::eq(self, other) {
+            return;
         }
+        self.malloc_current.fetch_add(
+            other.malloc_current.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.malloc_total.fetch_add(
+            other.malloc_total.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
         self.malloc_count.fetch_add(
             other.malloc_count.load(Ordering::Relaxed),
             Ordering::Relaxed,
         );
-        let p = other.pages_current.load(Ordering::Relaxed);
-        if p != 0 {
-            peak_add(
-                &self.pages_current,
-                &self.pages_peak,
-                Some(&self.pages_total),
-                p,
-            );
-        }
+        let malloc_peak = self
+            .malloc_peak
+            .load(Ordering::Relaxed)
+            .max(other.malloc_peak.load(Ordering::Relaxed))
+            .max(self.malloc_current.load(Ordering::Relaxed));
+        self.malloc_peak.store(malloc_peak, Ordering::Relaxed);
+        self.pages_current.fetch_add(
+            other.pages_current.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.pages_total
+            .fetch_add(other.pages_total.load(Ordering::Relaxed), Ordering::Relaxed);
+        let pages_peak = self
+            .pages_peak
+            .load(Ordering::Relaxed)
+            .max(other.pages_peak.load(Ordering::Relaxed))
+            .max(self.pages_current.load(Ordering::Relaxed));
+        self.pages_peak.store(pages_peak, Ordering::Relaxed);
+    }
+
+    pub fn reset(&self) {
+        self.malloc_current.store(0, Ordering::Relaxed);
+        self.malloc_total.store(0, Ordering::Relaxed);
+        self.malloc_peak.store(0, Ordering::Relaxed);
+        self.malloc_count.store(0, Ordering::Relaxed);
+        self.pages_current.store(0, Ordering::Relaxed);
+        self.pages_total.store(0, Ordering::Relaxed);
+        self.pages_peak.store(0, Ordering::Relaxed);
+    }
+
+    pub fn take_from(&self, other: &AllocStats) {
+        self.merge_from(other);
+        other.reset();
     }
 
     pub unsafe fn copy_into(&self, out: *mut Stats) {

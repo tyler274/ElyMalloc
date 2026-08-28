@@ -305,6 +305,45 @@ pub unsafe fn collect(force: bool) {
     heap::collect_heap(h, force);
 }
 
+/// C `MI_SMALL_SIZE_MAX` (128 words).
+pub const SMALL_SIZE_MAX: usize = 128 * PTR_SIZE;
+
+/// Size-hinted free. Reports `EINVAL` if `size` is larger than the usable
+/// size (C debug `mi_free_size`), then still frees.
+pub unsafe fn free_size(p: *mut u8, size: usize) {
+    if p.is_null() {
+        return;
+    }
+    crate::init();
+    let page = page_map::get(p);
+    if page.is_null() || (*page).magic != PAGE_MAGIC {
+        return;
+    }
+    let usable = page::usable_size(page, p);
+    if size > usable {
+        os::einval();
+        free(p);
+        return;
+    }
+    if size <= SMALL_SIZE_MAX && (*page).block_size > good_size(SMALL_SIZE_MAX) {
+        os::einval();
+        free(p);
+        return;
+    }
+    free(p);
+}
+
+pub unsafe fn free_size_aligned(p: *mut u8, size: usize, alignment: usize) {
+    if !p.is_null() && alignment != 0 && (p as usize) % alignment != 0 {
+        os::einval();
+    }
+    free_size(p, size);
+}
+
+pub unsafe fn collect_reduce(_target_thread_owned: usize) {
+    heap::collect_all(true);
+}
+
 pub unsafe fn malloc_aligned_at(size: usize, align: usize, offset: usize) -> *mut u8 {
     crate::init();
     if align == 0 || !align.is_power_of_two() {

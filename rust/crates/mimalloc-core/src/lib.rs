@@ -73,20 +73,22 @@ pub(crate) unsafe fn fork_child() {
 }
 
 pub use alloc::{
-    aligned_alloc, calloc, collect, expand, free, good_size, malloc, malloc_aligned,
-    malloc_aligned_at, manage_os_memory_ex, memalign, posix_memalign, pvalloc, realloc, reallocarr,
-    reallocarray, reallocf, realpath, reserve_os_memory, reserve_os_memory_ex, rezalloc,
-    rezalloc_aligned, rezalloc_aligned_at, strdup, strndup, ufree, umalloc, urealloc, usable_size,
-    valloc, VERSION,
+    aligned_alloc, calloc, collect, collect_reduce, expand, free, free_size, free_size_aligned,
+    good_size, malloc, malloc_aligned, malloc_aligned_at, manage_os_memory_ex, memalign,
+    posix_memalign, pvalloc, realloc, reallocarr, reallocarray, reallocf, realpath,
+    reserve_os_memory, reserve_os_memory_ex, rezalloc, rezalloc_aligned, rezalloc_aligned_at,
+    strdup, strndup, ufree, umalloc, urealloc, usable_size, valloc, VERSION,
 };
 pub use arena::{self as mi_arena, Arena};
 pub use heap::{
-    any_heap_contains, heap_collect, heap_contains, heap_delete, heap_destroy, heap_main,
-    heap_malloc, heap_malloc_aligned, heap_malloc_aligned_at, heap_new, heap_new_in_arena, heap_of,
-    heap_stats_get, heap_stats_merge_to_subproc, heap_theap, heap_visit_abandoned_blocks,
-    heap_visit_blocks, theap_collect, theap_get_default, theap_guarded_set_sample_rate,
-    theap_guarded_set_size_bound, theap_malloc, theap_malloc_aligned, theap_malloc_aligned_at,
-    theap_set_default, theap_stats_get, theap_visit_blocks, BlockVisitFun, Heap, HeapArea, Theap,
+    any_heap_contains, collect_all, heap_collect, heap_contains, heap_delete, heap_destroy,
+    heap_main, heap_malloc, heap_malloc_aligned, heap_malloc_aligned_at, heap_new,
+    heap_new_in_arena, heap_numa_node, heap_of, heap_set_numa_affinity, heap_stats_get,
+    heap_stats_merge_to_subproc, heap_theap, heap_visit_abandoned_blocks, heap_visit_blocks,
+    page_is_under_utilized, stats_merge, theap_collect, theap_get_default,
+    theap_guarded_set_sample_rate, theap_guarded_set_size_bound, theap_malloc,
+    theap_malloc_aligned, theap_malloc_aligned_at, theap_set_default, theap_set_in_threadpool,
+    theap_stats_get, theap_visit_blocks, BlockVisitFun, Heap, HeapArea, Theap,
 };
 pub use options as mi_options;
 pub use stats::{self as mi_stats, Stats};
@@ -696,9 +698,9 @@ mod tests {
             }
             let page = crate::page_map::get(v[0]);
             let bs = (*page).block_size;
-            let sequential = v.windows(2).all(|w| {
-                (w[1] as usize).abs_diff(w[0] as usize) == bs
-            });
+            let sequential = v
+                .windows(2)
+                .all(|w| (w[1] as usize).abs_diff(w[0] as usize) == bs);
             assert!(
                 !sequential,
                 "secure free-list init should not hand out 32 adjacent blocks in order"
@@ -706,6 +708,113 @@ mod tests {
             for p in v {
                 alloc::free(p);
             }
+        }
+    }
+
+    #[test]
+    fn free_size_too_large_still_frees() {
+        unsafe {
+            let p = alloc::malloc(32);
+            assert!(!p.is_null());
+            alloc::free_size(p, 1 << 20);
+            assert_eq!(alloc::usable_size(p as *const u8), 0);
+            let q = alloc::malloc(32);
+            alloc::free_size(q, 32);
+            assert_eq!(alloc::usable_size(q as *const u8), 0);
+        }
+    }
+
+    #[test]
+    fn numa_affinity_is_stored() {
+        unsafe {
+            let h = crate::heap_new();
+            assert_eq!(crate::heap_numa_node(h), -1);
+            crate::heap_set_numa_affinity(h, 3);
+            assert_eq!(crate::heap_numa_node(h), 3);
+            crate::heap_set_numa_affinity(h, -2);
+            assert_eq!(crate::heap_numa_node(h), -1);
+            crate::heap_destroy(h);
+        }
+    }
+
+    #[test]
+    fn stats_merge_zeros_theap_into_subproc() {
+        unsafe {
+            let h = crate::heap_new();
+            let p = crate::heap_malloc(h, 64);
+            assert!(!p.is_null());
+            let mut st = core::mem::zeroed();
+            assert!(crate::theap_stats_get(crate::heap_theap(h), &mut st));
+            assert!(st.malloc_requested.current > 0);
+            crate::heap_stats_merge_to_subproc(h);
+            assert!(crate::theap_stats_get(crate::heap_theap(h), &mut st));
+            assert_eq!(st.malloc_requested.current, 0);
+            crate::stats_merge();
+            crate::heap_destroy(h);
+        }
+    }
+
+    #[test]
+    fn under_utilized_skips_current_and_matches_c() {
+        unsafe {
+            assert!(!crate::page_is_under_utilized(
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                50
+            ));
+            let mut v: Vec<*mut u8> = Vec::new();
+            let mut older: *mut u8 = core::ptr::null_mut();
+            let mut first_page: *mut crate::page::Page = core::ptr::null_mut();
+            for _ in 0..4000 {
+                let p = alloc::malloc(32);
+                assert!(!p.is_null());
+                let page = crate::page_map::get(p);
+                if first_page.is_null() {
+                    first_page = page;
+                } else if page != first_page && older.is_null() {
+                    older = v[0];
+                }
+                v.push(p);
+                if !older.is_null() {
+                    break;
+                }
+            }
+            assert!(!older.is_null(), "need a second page for under-utilized");
+            // Current-queue head (newest page) is skipped.
+            let newest = *v.last().unwrap();
+            assert!(!crate::page_is_under_utilized(
+                core::ptr::null_mut(),
+                newest,
+                100
+            ));
+            alloc::free(older);
+            assert!(crate::page_is_under_utilized(
+                core::ptr::null_mut(),
+                v[1],
+                100
+            ));
+            let other = crate::heap_new();
+            assert!(!crate::page_is_under_utilized(other, v[1], 100));
+            crate::heap_destroy(other);
+            for p in v {
+                if p != older {
+                    alloc::free(p);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn collect_all_and_threadpool_do_not_panic() {
+        unsafe {
+            let h = crate::heap_new();
+            crate::theap_set_in_threadpool(crate::heap_theap(h));
+            let p = crate::heap_malloc(h, 48);
+            assert!(!p.is_null());
+            crate::heap_collect(h, true);
+            crate::heap_destroy(h);
+            crate::collect_all(true);
+            alloc::collect_reduce(0);
         }
     }
 }

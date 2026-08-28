@@ -90,6 +90,41 @@ int main(void) {
     mi_theap_guarded_set_sample_rate(th, 0, 0);
   }
 
+  last_err = 0;
+  mi_register_error(on_err, NULL);
+  {
+    void* p = mi_malloc(32);
+    if (p == NULL) die("free_size malloc");
+    mi_free_size(p, (size_t)1 << 20);
+    if (last_err != EINVAL) die("free_size EINVAL");
+  }
+  mi_register_error(NULL, NULL);
+
+  {
+    mi_heap_t* h = mi_heap_new();
+    if (h == NULL) die("heap_new numa");
+    mi_heap_set_numa_affinity(h, 2);
+    mi_heap_set_numa_affinity(h, -1);
+    mi_heap_delete(h);
+  }
+
+  mi_thread_set_in_threadpool();
+  mi_collect_reduce(0);
+  mi_stats_merge();
+  mi_debug_show_arenas();
+  mi_arenas_print();
+
+  {
+    void* p = mi_malloc(16);
+    if (mi_unsafe_heap_page_is_under_utilized(NULL, p, 50)) {
+      die("current page should not be under-utilized");
+    }
+    if (mi_unsafe_heap_page_is_under_utilized(NULL, NULL, 50)) {
+      die("null under-utilized");
+    }
+    mi_free(p);
+  }
+
   printf("process ok\n");
   return 0;
 }

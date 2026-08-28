@@ -20,6 +20,7 @@ pub struct Arena {
     pub base: *mut u8,
     pub size: usize,
     pub subproc: *mut crate::subproc::Subproc,
+    pub numa_node: i32,
     bump: AtomicUsize,
     next: *mut Arena,
 }
@@ -88,6 +89,7 @@ pub unsafe fn reserve(
     (*a).base = base;
     (*a).size = size;
     (*a).subproc = crate::subproc::current_ptr();
+    (*a).numa_node = -1;
     (*a).bump = AtomicUsize::new(0);
     crate::stats::arena_add();
     loop {
@@ -177,7 +179,7 @@ pub unsafe fn manage(
     is_committed: bool,
     _is_pinned: bool,
     _is_zero: bool,
-    _numa_node: i32,
+    numa_node: i32,
     exclusive: bool,
 ) -> *mut Arena {
     crate::init();
@@ -208,6 +210,7 @@ pub unsafe fn manage(
     (*a).base = aligned as *mut u8;
     (*a).size = usable;
     (*a).subproc = crate::subproc::current_ptr();
+    (*a).numa_node = if numa_node < 0 { -1 } else { numa_node };
     (*a).bump = AtomicUsize::new(0);
     loop {
         let old = LIST.load(Ordering::Acquire);
@@ -220,6 +223,21 @@ pub unsafe fn manage(
         }
     }
     a
+}
+
+pub type ArenaVisitFun =
+    unsafe extern "C" fn(arena: *mut Arena, arg: *mut core::ffi::c_void) -> bool;
+
+pub unsafe fn visit_all(visitor: ArenaVisitFun, arg: *mut core::ffi::c_void) -> bool {
+    let mut cur = LIST.load(Ordering::Acquire);
+    while !cur.is_null() {
+        let next = (*cur).next;
+        if (*cur).magic == ARENA_MAGIC && !visitor(cur, arg) {
+            return false;
+        }
+        cur = next;
+    }
+    true
 }
 
 pub fn force_unlock() {
