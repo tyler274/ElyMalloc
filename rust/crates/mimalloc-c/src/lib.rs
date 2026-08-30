@@ -1227,7 +1227,7 @@ pub unsafe extern "C" fn mi_process_info_print_out(out: *mut c_void, arg: *mut c
         &mut peak_commit,
         &mut faults,
     );
-    let mut buf = [0i8; 256];
+    let mut buf = [0 as libc::c_char; 256];
     libc::snprintf(
         buf.as_mut_ptr(),
         buf.len(),
@@ -1245,7 +1245,7 @@ pub unsafe extern "C" fn mi_process_info_print_out(out: *mut c_void, arg: *mut c
 
 #[no_mangle]
 pub unsafe extern "C" fn mi_options_print_out(out: *mut c_void, arg: *mut c_void) {
-    let mut buf = [0i8; 128];
+    let mut buf = [0 as libc::c_char; 128];
     libc::snprintf(
         buf.as_mut_ptr(),
         buf.len(),
@@ -1367,7 +1367,7 @@ pub unsafe extern "C" fn mi_heap_realpath(
         return libc::realpath(fname, resolved_name);
     }
     const PATH_MAX: usize = 4096;
-    let mut buf = [0i8; PATH_MAX];
+    let mut buf = [0 as libc::c_char; PATH_MAX];
     let r = libc::realpath(fname, buf.as_mut_ptr());
     if r.is_null() {
         return core::ptr::null_mut();
@@ -1632,7 +1632,7 @@ pub unsafe extern "C" fn mi_free_aligned(p: *mut c_void, _alignment: usize) {
 }
 
 unsafe fn print_stats(stats: &mimalloc_core::Stats, out: *mut c_void, arg: *mut c_void) {
-    let mut buf = [0i8; 256];
+    let mut buf = [0 as libc::c_char; 256];
     libc::snprintf(
         buf.as_mut_ptr(),
         buf.len(),
@@ -1700,7 +1700,7 @@ unsafe extern "C" fn arena_print_visitor(a: *mut mimalloc_core::Arena, arg: *mut
     } else {
         b"\0".as_ptr()
     };
-    let mut buf = [0i8; 256];
+    let mut buf = [0 as libc::c_char; 256];
     libc::snprintf(
         buf.as_mut_ptr(),
         buf.len(),
@@ -2001,7 +2001,7 @@ unsafe fn stats_as_json(
     if stats.is_null() {
         return core::ptr::null_mut();
     }
-    let mut tmp = [0i8; 256];
+    let mut tmp = [0 as libc::c_char; 256];
     let n = libc::snprintf(
         tmp.as_mut_ptr(),
         tmp.len(),

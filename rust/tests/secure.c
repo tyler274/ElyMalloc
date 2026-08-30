@@ -1,5 +1,5 @@
 /* Verify always-on secure mitigations: padding, encoded free lists,
-   invalid free, metadata guard pages, and sampled object guards. */
+   invalid free, metadata and end-of-page guards, and sampled object guards. */
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -129,6 +129,28 @@ int main(void) {
     int st = wait_child(pid);
     if (!(WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV)) {
       die("metadata guard page");
+    }
+    mi_free(p);
+  }
+
+  {
+    void* p = mi_malloc(32);
+    if (p == NULL) {
+      die("malloc endguard");
+    }
+    uintptr_t slice = (uintptr_t)p & ~((uintptr_t)0xFFFF);
+    pid_t pid = fork();
+    if (pid < 0) {
+      die("fork endguard");
+    }
+    if (pid == 0) {
+      volatile char c = *(volatile char*)(slice + 0xFFFFu);
+      (void)c;
+      _exit(2);
+    }
+    int st = wait_child(pid);
+    if (!(WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV)) {
+      die("end-of-page guard");
     }
     mi_free(p);
   }
