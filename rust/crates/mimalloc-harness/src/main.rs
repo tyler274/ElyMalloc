@@ -29,6 +29,8 @@ enum Cmd {
     Bench,
     /// Typical NixOS-world CLI packages under LD_PRELOAD
     World,
+    /// Vulkan Memory Allocator C ABI (virtual allocator + exported vma* symbols)
+    Vma,
 }
 
 fn main() {
@@ -42,6 +44,7 @@ fn main() {
         Cmd::Linkers => mimalloc_harness::linkers::run(),
         Cmd::Bench => mimalloc_harness::bench::run(),
         Cmd::World => mimalloc_harness::world::run(),
+        Cmd::Vma => mimalloc_harness::vma::run(),
     };
     if let Err(e) = r {
         eprintln!("{e:#}");

@@ -81,6 +81,7 @@
           };
           world-preload = pkgs.callPackage ./rust/world.nix { mimalloc = mimallocUnchecked; };
           live = pkgs.callPackage ./rust/live.nix { mimalloc = mimallocUnchecked; };
+          vma = pkgs.callPackage ./rust/vma.nix { };
           nixos-malloc = pkgs.testers.runNixOSTest {
             name = "mimalloc-memory-allocator";
             nodes.machine =
@@ -144,6 +145,7 @@
             echo ok > $out/ok
           '';
         world-preload = self.packages.${system}.world-preload;
+        vma = self.packages.${system}.vma;
       });
 
       devShells = forAllSystems (

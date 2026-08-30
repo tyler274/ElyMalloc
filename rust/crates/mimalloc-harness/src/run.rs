@@ -28,6 +28,9 @@ pub fn run() -> Result<()> {
     if !env_is_one("SKIP_WASM_SMOKE") {
         crate::wasm_smoke::run()?;
     }
+    if !env_is_one("SKIP_VMA") {
+        crate::vma::run()?;
+    }
 
     println!("all rust mimalloc checks passed");
     Ok(())

@@ -19,6 +19,7 @@ pub mod run;
 pub mod wasm;
 pub mod wasm_smoke;
 pub mod world;
+pub mod vma;
 
 use std::path::{Path, PathBuf};
 

@@ -32,6 +32,8 @@ nix build .#mimalloc-musl
 # rebuild mold with this library statically linked:
 nix build .#mold
 nix build .#checks.x86_64-linux.mold
+nix build .#vma
+nix build .#checks.x86_64-linux.vma
 ```
 
 Compiler suites vs C mimalloc and stock jemalloc (needs `cmake`; `wasmtime` is not required):
@@ -62,6 +64,19 @@ use mimalloc_core::Mimalloc;
 
 #[global_allocator]
 static ALLOC: Mimalloc = Mimalloc;
+```
+
+## Vulkan Memory Allocator
+
+Pure-Rust GPU heap manager with AMD [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) 3.3 C ABI (`vma*` / `Vma*` as in `vk_mem_alloc.h`). Include AMD's header without `VMA_IMPLEMENTATION` (or `crates/vma-c/include/vk_mem_alloc.h`) and link `libVulkanMemoryAllocator.so.3`. Vulkan is called only through `VmaVulkanFunctions` or `libvulkan.so.1`. The virtual allocator needs no GPU.
+
+```
+cd rust
+cargo test -p vma-core
+cargo build --release -p vma-c
+./tests/vma-abi.sh
+# or: cargo run -p mimalloc-harness -- vma
+nix build .#vma
 ```
 
 ## NixOS
@@ -152,4 +167,3 @@ nix build .#mimalloc   # installs $out/bin/mimalloc-bench
 ## Later
 
 - Compare **C mimalloc vs this Rust rewrite** as the process allocator for **Firefox, Chromium, and Electron** (startup, multi-process, and a short browsing/CI smoke on each).
-- **Vulkan Memory Allocator ABI in Rust:** implement a GPU heap manager with an equivalent ABI to AMD [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (`vma*` / `Vma*` as in `vk_mem_alloc.h`).

@@ -7,6 +7,8 @@ members = [
     "crates/mimalloc-harness",
     "crates/mimalloc-alloc-stress",
     "crates/mimalloc-bench",
+    "crates/vma-core",
+    "crates/vma-c",
 ]
 default-members = ["crates/mimalloc-core", "crates/mimalloc-c"]
 
