@@ -1,0 +1,10 @@
+[package]
+name = "mimalloc-alloc-stress"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "#[global_allocator] stress for mimalloc-core (host linkers + GlobalAlloc)"
+
+[dependencies]
+mimalloc-core = { path = "../mimalloc-core" }
