@@ -53,8 +53,13 @@ struct Padding {
 }
 
 #[inline]
+fn fill_enabled() -> bool {
+    cfg!(any(debug_assertions, feature = "debug-fill"))
+}
+
+#[inline]
 fn debug_fill(p: *mut u8, size: usize, byte: u8) {
-    if cfg!(debug_assertions) && !p.is_null() && size != 0 {
+    if fill_enabled() && !p.is_null() && size != 0 {
         unsafe {
             ptr::write_bytes(p, byte, size);
         }
@@ -97,8 +102,8 @@ static KEY_SEQ: AtomicU64 = AtomicU64::new(0x9E37_79B9);
 unsafe fn init_keys(page: *mut Page) {
     let n = KEY_SEQ.fetch_add(0x9E37, Ordering::Relaxed) as usize;
     let a = page as usize;
-    (*page).key1 = a.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(n) | 1;
-    (*page).key2 = (*page).key1.rotate_left(13) ^ n.wrapping_mul(0xA076_1D64_78BD_642F);
+    (*page).key1 = a.wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as usize).wrapping_add(n) | 1;
+    (*page).key2 = (*page).key1.rotate_left(13) ^ n.wrapping_mul(0xA076_1D64_78BD_642Fu64 as usize);
 }
 
 #[inline]
@@ -171,7 +176,7 @@ fn block_align(block_size: usize) -> usize {
     po2.max(16)
 }
 
-/// `[lead guard][Page][mid guard][blocks…]` — C `MI_SECURE` metadata guards.
+/// `[lead guard][Page][mid guard][blocks…][end guard]` — C `MI_SECURE` / `MI_SECURE=FULL`.
 fn meta_prefix(block_align: usize) -> (usize, usize, usize) {
     let os = os::page_size();
     let lead = os;
@@ -181,10 +186,23 @@ fn meta_prefix(block_align: usize) -> (usize, usize, usize) {
     (lead, meta, align_up(area0, block_align.max(1)))
 }
 
+#[inline]
+fn end_guard_size() -> usize {
+    os::page_size()
+}
+
 unsafe fn install_meta_guards(base: *mut u8, lead: usize, meta: usize) {
     let os = os::page_size();
     let _ = os::protect(base, os);
     let _ = os::protect(base.add(lead + meta), os);
+}
+
+unsafe fn install_end_guard(base: *mut u8, map_size: usize) {
+    let os = end_guard_size();
+    if base.is_null() || map_size <= os {
+        return;
+    }
+    let _ = os::protect(base.add(map_size - os), os);
 }
 
 unsafe fn unprotect_meta_guards(page: *mut Page) {
@@ -197,10 +215,14 @@ unsafe fn unprotect_meta_guards(page: *mut Page) {
     let meta = align_up(core::mem::size_of::<Page>(), os);
     let _ = os::unprotect(base, os);
     let _ = os::unprotect(base.add(lead + meta), os);
+    let size = (*page).map_size;
+    if size > os {
+        let _ = os::unprotect(base.add(size - os), os);
+    }
 }
 
 fn shuffle_usize(x: usize) -> usize {
-    x.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(13) ^ (x >> 7)
+    x.wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as usize).rotate_left(13) ^ (x >> 7)
 }
 
 /// Randomized free list (C `mi_page_free_list_extend_secure`, `MI_SECURE>=2`).
@@ -267,21 +289,23 @@ unsafe fn init_local_free(page: *mut Page, area: *mut u8, bsize: usize, capacity
 
 /// Allocate a page of `map_size` bytes holding equal `block_size` blocks.
 pub unsafe fn create(block_size: usize, map_size: usize, arena: *mut Arena) -> *mut Page {
-    let map_size = align_up(map_size.max(SLICE_SIZE), SLICE_SIZE);
+    let align = block_align(block_size);
+    let (lead, meta, area_off) = meta_prefix(align);
+    let tail = end_guard_size();
+    let need = area_off.saturating_add(block_size).saturating_add(tail);
+    let map_size = align_up(map_size.max(SLICE_SIZE).max(need), SLICE_SIZE);
     let (base, from_arena) = map_page_memory(map_size, SLICE_SIZE, arena);
     if base.is_null() {
         return ptr::null_mut();
     }
-    let align = block_align(block_size);
-    let (lead, meta, area_off) = meta_prefix(align);
-    if area_off.saturating_add(block_size) > map_size {
+    if area_off.saturating_add(block_size).saturating_add(tail) > map_size {
         unmap_page_memory(base, map_size, from_arena);
         return ptr::null_mut();
     }
     let page = base.add(lead) as *mut Page;
     ptr::write_bytes(page as *mut u8, 0, core::mem::size_of::<Page>());
     let area = base.add(area_off);
-    let usable = map_size.saturating_sub(area_off);
+    let usable = map_size.saturating_sub(area_off).saturating_sub(tail);
     let capacity = usable / block_size;
     if capacity == 0 {
         unmap_page_memory(base, map_size, from_arena);
@@ -307,6 +331,7 @@ pub unsafe fn create(block_size: usize, map_size: usize, arena: *mut Arena) -> *
     init_keys(page);
     init_local_free(page, area, block_size, capacity);
     install_meta_guards(base, lead, meta);
+    install_end_guard(base, map_size);
 
     page_map::set_range(base, map_size, page);
     crate::stats::page_add();
@@ -326,8 +351,12 @@ pub unsafe fn create_huge(
     }
     let payload = size.max(16);
     let (lead, meta, prefix) = meta_prefix(16);
+    let tail = end_guard_size();
     let total = align_up(
-        prefix.saturating_add(align).saturating_add(payload),
+        prefix
+            .saturating_add(align)
+            .saturating_add(payload)
+            .saturating_add(tail),
         SLICE_SIZE.max(align.min(SLICE_SIZE * 16)),
     );
     let map_align = align.max(SLICE_SIZE);
@@ -343,7 +372,7 @@ pub unsafe fn create_huge(
     let cur = area0 % align;
     let add = (want + align - cur) % align;
     let area = (area0 + add) as *mut u8;
-    if (area as usize) + payload > (base as usize) + total {
+    if (area as usize) + payload + tail > (base as usize) + total {
         unmap_page_memory(base, total, from_arena);
         return ptr::null_mut();
     }
@@ -365,6 +394,7 @@ pub unsafe fn create_huge(
     }
     init_keys(page);
     install_meta_guards(base, lead, meta);
+    install_end_guard(base, total);
     page_map::set_range(base, total, page);
     crate::stats::page_add();
     page
@@ -548,7 +578,7 @@ pub unsafe fn write_padding(p: *mut u8, user_size: usize) {
     let pad = padding_ptr(page, p);
     (*pad).canary = canary(page, p);
     (*pad).delta = delta as u32;
-    if cfg!(debug_assertions) && (*page).capacity != 1 && delta != 0 {
+    if fill_enabled() && (*page).capacity != 1 && delta != 0 {
         let n = delta.min(16);
         ptr::write_bytes(p.add(user), DEBUG_PADDING, n);
     }
@@ -637,7 +667,7 @@ pub unsafe fn check_free(page: *mut Page, p: *mut u8) -> bool {
     }
     match decode_padding(page, p) {
         Some((delta, _)) => {
-            if cfg!(debug_assertions) && (*page).capacity != 1 && delta != 0 {
+            if fill_enabled() && (*page).capacity != 1 && delta != 0 {
                 let user = bsize - delta;
                 let n = delta.min(16);
                 let fill = p.add(user);

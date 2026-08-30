@@ -48,7 +48,10 @@ impl Drop for SpinGuard<'_> {
 }
 
 fn os_yield() {
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         libc::sched_yield();
     }
+    #[cfg(target_arch = "wasm32")]
+    core::hint::spin_loop();
 }

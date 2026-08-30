@@ -6,6 +6,7 @@
 pub mod alloc;
 pub mod arena;
 mod bin;
+pub mod global;
 mod heap;
 pub mod hooks;
 pub mod options;
@@ -66,6 +67,7 @@ pub fn init() {
 }
 
 /// Child after `fork`: locks may have been held by threads that do not exist here.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn fork_child() {
     INIT_LOCK.force_unlock();
     tls::force_unlock();
@@ -93,6 +95,7 @@ pub use heap::{
 pub use options as mi_options;
 pub use stats::{self as mi_stats, Stats};
 pub use subproc::{self as mi_subproc, Subproc, SubprocId};
+pub use global::Mimalloc;
 pub use tls::thread_done;
 
 #[cfg(test)]
@@ -109,6 +112,23 @@ mod tests {
             core::ptr::write_bytes(p, 0xAB, 64);
             assert_eq!(*p, 0xAB);
             alloc::free(p);
+        }
+    }
+
+    #[test]
+    fn global_alloc_trait() {
+        use core::alloc::{GlobalAlloc, Layout};
+        let a = crate::Mimalloc;
+        let layout = Layout::from_size_align(48, 8).unwrap();
+        unsafe {
+            let p = a.alloc(layout);
+            assert!(!p.is_null());
+            core::ptr::write_bytes(p, 0xCD, 48);
+            assert_eq!(*p, 0xCD);
+            let q = a.realloc(p, layout, 96);
+            assert!(!q.is_null());
+            assert_eq!(*q, 0xCD);
+            a.dealloc(q, Layout::from_size_align(96, 8).unwrap());
         }
     }
 
@@ -174,18 +194,18 @@ mod tests {
         unsafe {
             let sentinel = 0x1111 as *mut u8;
             let mut p = sentinel;
-            assert_eq!(alloc::posix_memalign(&mut p, 3, 32), libc::EINVAL);
+            assert_eq!(alloc::posix_memalign(&mut p, 3, 32), crate::os::EINVAL);
             assert_eq!(p, sentinel);
             p = sentinel;
             assert_eq!(
                 alloc::posix_memalign(&mut p, 3 * crate::PTR_SIZE, 32),
-                libc::EINVAL
+                crate::os::EINVAL
             );
             assert_eq!(p, sentinel);
             p = sentinel;
             assert_eq!(
                 alloc::posix_memalign(&mut p, crate::PTR_SIZE, usize::MAX),
-                libc::ENOMEM
+                crate::os::ENOMEM
             );
             assert_eq!(p, sentinel);
         }
@@ -228,6 +248,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn parallel_allocs() {
         extern crate std;
@@ -281,7 +302,7 @@ mod tests {
     #[test]
     fn strdup_roundtrip() {
         unsafe {
-            let s = b"hello mimalloc\0".as_ptr() as *const libc::c_char;
+            let s = b"hello mimalloc\0".as_ptr() as *const core::ffi::c_char;
             let d = alloc::strdup(s);
             assert!(!d.is_null());
             let mut i = 0;
@@ -475,14 +496,14 @@ mod tests {
             LAST.store(0, AtomicOrdering::Relaxed);
             let p = alloc::calloc(usize::MAX, usize::MAX);
             assert!(p.is_null());
-            assert_eq!(LAST.load(AtomicOrdering::Relaxed), libc::ENOMEM);
+            assert_eq!(LAST.load(AtomicOrdering::Relaxed), crate::os::ENOMEM);
             crate::hooks::register_error(core::ptr::null_mut(), core::ptr::null_mut());
         }
     }
 
     #[test]
     fn debug_fill_uninit_and_freed() {
-        if !cfg!(debug_assertions) {
+        if !cfg!(any(debug_assertions, feature = "debug-fill")) {
             return;
         }
         unsafe {
@@ -601,13 +622,13 @@ mod tests {
                 core::ptr::write_bytes(p.add(16), 0xFF, smash);
             }
             alloc::free(p);
-            assert_eq!(LAST.load(AtomicOrdering::Relaxed), libc::EFAULT);
+            assert_eq!(LAST.load(AtomicOrdering::Relaxed), crate::os::EFAULT);
 
             LAST.store(0, AtomicOrdering::Relaxed);
             let q = alloc::malloc(32);
             alloc::free(q);
             alloc::free(q);
-            assert_eq!(LAST.load(AtomicOrdering::Relaxed), libc::EAGAIN);
+            assert_eq!(LAST.load(AtomicOrdering::Relaxed), crate::os::EAGAIN);
             crate::hooks::register_error(core::ptr::null_mut(), core::ptr::null_mut());
         }
     }
@@ -632,6 +653,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn prot_at(addr: usize) -> Option<std::string::String> {
         let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
         for line in maps.lines() {
@@ -664,6 +686,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn metadata_guard_page_is_inaccessible() {
         unsafe {
@@ -682,6 +705,30 @@ mod tests {
             assert!(
                 meta.contains('r') && meta.contains('w'),
                 "page header should be RW, got {meta}"
+            );
+            alloc::free(p);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn end_of_page_guard_is_inaccessible() {
+        unsafe {
+            let p = alloc::malloc(32);
+            assert!(!p.is_null());
+            let page = crate::page_map::get(p);
+            assert!(!page.is_null());
+            let os = crate::os::page_size();
+            let end = (*page).map_base as usize + (*page).map_size - os;
+            let guard = prot_at(end).expect("end guard in maps");
+            assert!(
+                !guard.contains('r') && !guard.contains('w'),
+                "end-of-page guard should be PROT_NONE, got {guard}"
+            );
+            let last = (*page).area as usize + ((*page).capacity as usize - 1) * (*page).block_size;
+            assert!(
+                last + (*page).block_size <= end,
+                "blocks must not overlap the end guard"
             );
             alloc::free(p);
         }

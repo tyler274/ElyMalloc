@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "no_std mimalloc-inspired allocator core"
 
-[dependencies]
+[features]
+default = []
+debug-fill = []
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libc.workspace = true
 
 [lib]

@@ -1,15 +1,12 @@
 //! Linux OS primitives via libc syscall wrappers that do not allocate.
 
+use super::{mix_rng, random_u64, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::align_up;
 use core::ptr;
-use core::sync::atomic::{AtomicU64, Ordering};
 
-pub const PROT_READ: i32 = libc::PROT_READ;
-pub const PROT_WRITE: i32 = libc::PROT_WRITE;
-pub const PROT_NONE: i32 = libc::PROT_NONE;
+pub const MAP_NORESERVE: i32 = libc::MAP_NORESERVE;
 
 static mut OS_PAGE_SIZE: usize = 4096;
-static RNG: AtomicU64 = AtomicU64::new(0x9E37_79B9_7F4A_7C15);
 
 pub fn init() {
     unsafe {
@@ -20,21 +17,8 @@ pub fn init() {
         let mix = (gettid() as u64)
             .wrapping_mul(0xA076_1D64_78BD_642F)
             .wrapping_add(OS_PAGE_SIZE as u64);
-        RNG.fetch_xor(mix, Ordering::Relaxed);
+        mix_rng(mix);
     }
-}
-
-/// Cheap xorshift for ASLR-style jitter (not a cryptographic RNG).
-pub fn random_u64() -> u64 {
-    let mut x = RNG.load(Ordering::Relaxed);
-    if x == 0 {
-        x = 0x9E37_79B9_7F4A_7C15;
-    }
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    RNG.store(x, Ordering::Relaxed);
-    x
 }
 
 #[inline]
@@ -51,6 +35,7 @@ pub fn abort() -> ! {
 
 #[inline]
 pub fn gettid() -> u32 {
+    // `SYS_gettid` is the Linux ABI on every arch (glibc and musl).
     unsafe { libc::syscall(libc::SYS_gettid) as u32 }
 }
 
@@ -140,34 +125,13 @@ pub unsafe fn madvise_dontneed(p: *mut u8, size: usize) {
 
 pub fn set_errno(err: i32) {
     unsafe {
-        *libc::__errno_location() = err;
+        *errno_location() = err;
     }
 }
 
-pub fn enomem() {
-    set_errno(libc::ENOMEM);
-    crate::hooks::error(libc::ENOMEM);
-}
-
-pub fn einval() {
-    set_errno(libc::EINVAL);
-    crate::hooks::error(libc::EINVAL);
-}
-
-pub fn eagain() {
-    set_errno(libc::EAGAIN);
-    crate::hooks::error(libc::EAGAIN);
-}
-
-/// Report `EFAULT` without aborting (padding overflow / double-free).
-pub fn efault_report() {
-    set_errno(libc::EFAULT);
-    crate::hooks::error(libc::EFAULT);
-}
-
-pub fn efault() -> ! {
-    efault_report();
-    abort();
+#[inline]
+fn errno_location() -> *mut i32 {
+    unsafe { libc::__errno_location() }
 }
 
 pub unsafe fn protect(p: *mut u8, size: usize) -> bool {
@@ -182,4 +146,8 @@ pub unsafe fn unprotect(p: *mut u8, size: usize) -> bool {
         return true;
     }
     libc::mprotect(p as *mut libc::c_void, size, PROT_READ | PROT_WRITE) == 0
+}
+
+pub unsafe fn commit(p: *mut u8, size: usize) -> bool {
+    unprotect(p, size)
 }

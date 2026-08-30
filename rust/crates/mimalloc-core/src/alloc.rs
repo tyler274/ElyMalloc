@@ -7,6 +7,7 @@ use crate::page::{self, PAGE_MAGIC};
 use crate::page_map;
 use crate::tls;
 use crate::{align_up, MAX_ALLOC, PADDING_SIZE, PTR_SIZE};
+use core::ffi::c_char;
 use core::ptr::{self, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -204,16 +205,16 @@ pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
 
 pub unsafe fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> i32 {
     if out.is_null() {
-        return libc::EINVAL;
+        return os::EINVAL;
     }
     if align < PTR_SIZE || !align.is_power_of_two() {
         os::einval();
-        return libc::EINVAL;
+        return os::EINVAL;
     }
     let p = malloc_aligned(size, align);
     if p.is_null() {
         os::enomem();
-        return libc::ENOMEM;
+        return os::ENOMEM;
     }
     *out = p;
     0
@@ -251,22 +252,22 @@ pub unsafe fn reallocarray(p: *mut u8, count: usize, size: usize) -> *mut u8 {
 pub unsafe fn reallocarr(p: *mut *mut u8, count: usize, size: usize) -> i32 {
     if p.is_null() {
         os::einval();
-        return libc::EINVAL;
+        return os::EINVAL;
     }
     let q = reallocarray(*p, count, size);
     if q.is_null() && (count != 0 && size != 0) {
-        return libc::ENOMEM;
+        return os::ENOMEM;
     }
     *p = q;
     0
 }
 
-pub unsafe fn strdup(s: *const libc::c_char) -> *mut libc::c_char {
+pub unsafe fn strdup(s: *const c_char) -> *mut c_char {
     if s.is_null() {
         return ptr::null_mut();
     }
     let n = libc_strlen(s);
-    let p = malloc(n + 1) as *mut libc::c_char;
+    let p = malloc(n + 1) as *mut c_char;
     if p.is_null() {
         return ptr::null_mut();
     }
@@ -274,7 +275,7 @@ pub unsafe fn strdup(s: *const libc::c_char) -> *mut libc::c_char {
     p
 }
 
-pub unsafe fn strndup(s: *const libc::c_char, n: usize) -> *mut libc::c_char {
+pub unsafe fn strndup(s: *const c_char, n: usize) -> *mut c_char {
     if s.is_null() {
         return ptr::null_mut();
     }
@@ -282,7 +283,7 @@ pub unsafe fn strndup(s: *const libc::c_char, n: usize) -> *mut libc::c_char {
     while len < n && *s.add(len) != 0 {
         len += 1;
     }
-    let p = malloc(len + 1) as *mut libc::c_char;
+    let p = malloc(len + 1) as *mut c_char;
     if p.is_null() {
         return ptr::null_mut();
     }
@@ -291,7 +292,7 @@ pub unsafe fn strndup(s: *const libc::c_char, n: usize) -> *mut libc::c_char {
     p
 }
 
-unsafe fn libc_strlen(s: *const libc::c_char) -> usize {
+unsafe fn libc_strlen(s: *const c_char) -> usize {
     let mut n = 0usize;
     while *s.add(n) != 0 {
         n += 1;
@@ -495,25 +496,30 @@ pub unsafe fn ufree(p: *mut u8, block_size: *mut usize) {
     free(p);
 }
 
-pub unsafe fn realpath(
-    fname: *const libc::c_char,
-    resolved: *mut libc::c_char,
-) -> *mut libc::c_char {
-    const PATH_MAX: usize = 4096;
-    if fname.is_null() {
+pub unsafe fn realpath(fname: *const c_char, resolved: *mut c_char) -> *mut c_char {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (fname, resolved);
         os::einval();
         return ptr::null_mut();
     }
-    if !resolved.is_null() {
-        let r = libc::realpath(fname, resolved);
-        return r;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        const PATH_MAX: usize = 4096;
+        if fname.is_null() {
+            os::einval();
+            return ptr::null_mut();
+        }
+        if !resolved.is_null() {
+            return libc::realpath(fname, resolved);
+        }
+        let mut buf = [0 as c_char; PATH_MAX];
+        let r = libc::realpath(fname, buf.as_mut_ptr());
+        if r.is_null() {
+            return ptr::null_mut();
+        }
+        strdup(buf.as_ptr())
     }
-    let mut buf = [0i8; PATH_MAX];
-    let r = libc::realpath(fname, buf.as_mut_ptr());
-    if r.is_null() {
-        return ptr::null_mut();
-    }
-    strdup(buf.as_ptr())
 }
 
 pub unsafe fn reserve_os_memory(size: usize, commit: bool, allow_large: bool) -> i32 {
@@ -536,7 +542,7 @@ pub unsafe fn reserve_os_memory_ex(
     }
     let a = crate::arena::reserve(size, commit, allow_large, exclusive);
     if a.is_null() {
-        return libc::ENOMEM;
+        return os::ENOMEM;
     }
     if !arena_id.is_null() {
         *arena_id = a;

@@ -75,6 +75,12 @@ pub fn init() {
 }
 
 fn apply_env() {
+    #[cfg(not(target_arch = "wasm32"))]
+    apply_env_linux();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_env_linux() {
     for (i, name) in NAMES.iter().enumerate() {
         let mut key = [0u8; 80];
         let prefix = b"mimalloc_";
@@ -95,6 +101,7 @@ fn apply_env() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn parse_env(s: *const libc::c_char) -> Option<i64> {
     let n = libc::strlen(s);
     if n == 0 {

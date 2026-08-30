@@ -6,7 +6,9 @@ use crate::os;
 use crate::spin::SpinLock;
 use crate::stats::{self, AllocStats, Stats};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub const SUBPROC_MAGIC: u32 = 0x4D495350; // 'MISP'
 
@@ -28,7 +30,10 @@ static mut META_BUMP: *mut u8 = ptr::null_mut();
 static mut META_END: *mut u8 = ptr::null_mut();
 static mut META_FREE: *mut Subproc = ptr::null_mut();
 static MAIN: AtomicPtr<Subproc> = AtomicPtr::new(ptr::null_mut());
+#[cfg(not(target_arch = "wasm32"))]
 static CURRENT_KEY: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(target_arch = "wasm32")]
+static CURRENT: AtomicPtr<Subproc> = AtomicPtr::new(ptr::null_mut());
 const META_CHUNK: usize = 64 * 1024;
 
 unsafe fn meta_alloc() -> *mut Subproc {
@@ -85,6 +90,7 @@ pub unsafe fn main() -> SubprocId {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn ensure_key() -> libc::pthread_key_t {
     let k = CURRENT_KEY.load(Ordering::Acquire);
     if k != usize::MAX {
@@ -106,12 +112,23 @@ fn ensure_key() -> libc::pthread_key_t {
 }
 
 pub unsafe fn current() -> SubprocId {
-    let key = ensure_key();
-    let p = libc::pthread_getspecific(key) as *mut Subproc;
-    if !p.is_null() && (*p).magic == SUBPROC_MAGIC {
-        return SubprocId { ptr: p };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let key = ensure_key();
+        let p = libc::pthread_getspecific(key) as *mut Subproc;
+        if !p.is_null() && (*p).magic == SUBPROC_MAGIC {
+            return SubprocId { ptr: p };
+        }
+        return main();
     }
-    main()
+    #[cfg(target_arch = "wasm32")]
+    {
+        let p = CURRENT.load(Ordering::Acquire);
+        if !p.is_null() && (*p).magic == SUBPROC_MAGIC {
+            return SubprocId { ptr: p };
+        }
+        main()
+    }
 }
 
 pub unsafe fn current_ptr() -> *mut Subproc {
@@ -138,9 +155,18 @@ pub unsafe fn destroy(id: SubprocId) {
     if s == MAIN.load(Ordering::Acquire) {
         return;
     }
-    let key = ensure_key();
-    if libc::pthread_getspecific(key) as *mut Subproc == s {
-        libc::pthread_setspecific(key, ptr::null());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let key = ensure_key();
+        if libc::pthread_getspecific(key) as *mut Subproc == s {
+            libc::pthread_setspecific(key, ptr::null());
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if CURRENT.load(Ordering::Acquire) == s {
+            CURRENT.store(ptr::null_mut(), Ordering::Release);
+        }
     }
     heap::destroy_heaps_in_subproc(s);
     crate::arena::destroy_owned_in_subproc(s);
@@ -153,8 +179,15 @@ pub unsafe fn add_current_thread(id: SubprocId) {
     if s.is_null() || (*s).magic != SUBPROC_MAGIC {
         return;
     }
-    let key = ensure_key();
-    libc::pthread_setspecific(key, s as *const libc::c_void);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let key = ensure_key();
+        libc::pthread_setspecific(key, s as *const libc::c_void);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        CURRENT.store(s, Ordering::Release);
+    }
 }
 
 pub fn is_valid(s: *const Subproc) -> bool {

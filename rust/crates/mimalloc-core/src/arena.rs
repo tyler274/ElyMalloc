@@ -65,11 +65,11 @@ pub unsafe fn reserve(
         return ptr::null_mut();
     }
     let size = align_up(size.max(SLICE_SIZE), SLICE_SIZE);
-    let extra = if commit { 0 } else { libc::MAP_NORESERVE };
+    let extra = if commit { 0 } else { os::MAP_NORESERVE };
     let prot = if commit {
-        libc::PROT_READ | libc::PROT_WRITE
+        os::PROT_READ | os::PROT_WRITE
     } else {
-        libc::PROT_NONE
+        os::PROT_NONE
     };
     let base = os::mmap_aligned_prot(size, SLICE_SIZE, prot, extra);
     if base.is_null() {
@@ -132,11 +132,7 @@ pub unsafe fn alloc(arena: *mut Arena, size: usize, align: usize) -> *mut u8 {
         {
             let p = (*arena).base.add(aligned);
             if !(*arena).committed {
-                let _ = libc::mprotect(
-                    p as *mut libc::c_void,
-                    size,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                );
+                let _ = os::commit(p, size);
                 crate::stats::commit_add(size);
             }
             return p;
