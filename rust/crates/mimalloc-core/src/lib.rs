@@ -28,6 +28,8 @@ pub const LARGE_PAGE_SIZE: usize = PTR_SIZE * MEDIUM_PAGE_SIZE;
 pub const LARGE_MAX_OBJ_SIZE: usize = LARGE_PAGE_SIZE / 8;
 pub const BIN_HUGE: usize = 73;
 pub const MAX_ALLOC: usize = isize::MAX as usize;
+/// C `MI_MAX_ALIGN_SIZE` / `alignof(max_align_t)`. `malloc` must return this.
+pub const MAX_ALIGN_SIZE: usize = 16;
 /// 8-byte `{canary, delta}` trailer at the end of every block (C `MI_PADDING`).
 pub const PADDING_SIZE: usize = 8;
 pub const MI_MALLOC_VERSION: i32 = 30500;
@@ -102,6 +104,7 @@ pub use tls::thread_done;
 mod tests {
     extern crate std;
     use super::alloc;
+    use super::MAX_ALIGN_SIZE;
     use std::vec::Vec;
 
     #[test]
@@ -237,6 +240,28 @@ mod tests {
             for (i, p) in v.iter().enumerate() {
                 assert_eq!(**p, (i % 251) as u8);
                 alloc::free(*p);
+            }
+        }
+    }
+
+    #[test]
+    fn malloc_is_max_aligned() {
+        unsafe {
+            let mut v: Vec<*mut u8> = Vec::new();
+            for size in 1..=128 {
+                for _ in 0..32 {
+                    let p = alloc::malloc(size);
+                    assert!(!p.is_null());
+                    assert_eq!(
+                        p as usize % MAX_ALIGN_SIZE,
+                        0,
+                        "malloc({size}) = {p:?} is not {MAX_ALIGN_SIZE}-aligned"
+                    );
+                    v.push(p);
+                }
+            }
+            for p in v {
+                alloc::free(p);
             }
         }
     }

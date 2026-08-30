@@ -29,6 +29,12 @@ pub fn rustc_ui_include(src: &str) -> bool {
             return false;
         }
     }
+    // HashMap Debug order is per-process (RandomState). The UI test prints
+    // "Found … expected …" on the first probe even when the second order
+    // matches, so stdout is not a stable oracle across two runs.
+    if src.contains("HashMap") && src.contains("check_strs") {
+        return false;
+    }
     true
 }
 
@@ -37,7 +43,7 @@ fn directive_rest(line: &str) -> Option<&str> {
     Some(line[idx + 3..].trim_start())
 }
 
-pub const RUST_UI_LIST_VER: &str = "exec-output-v1";
+pub const RUST_UI_LIST_VER: &str = "exec-output-v2";
 
 pub fn rustc_ui_list_current(text: &str) -> bool {
     text.lines().any(|l| l == format!("# {RUST_UI_LIST_VER}"))
@@ -87,8 +93,19 @@ mod tests {
     }
 
     #[test]
+    fn hashmap_debug_order_skipped() {
+        let src = r#"//@ run-pass
+use std::collections::HashMap;
+fn check_strs(actual: &str, expected: &str) -> bool { true }
+fn main() { let table = HashMap::new(); let _ = format!("{:?}", table); }
+"#;
+        assert!(!rustc_ui_include(src));
+    }
+
+    #[test]
     fn list_version_line() {
-        assert!(rustc_ui_list_current("# exec-output-v1\n/a.rs\n"));
+        assert!(rustc_ui_list_current("# exec-output-v2\n/a.rs\n"));
+        assert!(!rustc_ui_list_current("# exec-output-v1\n/a.rs\n"));
         assert!(!rustc_ui_list_current("/a.rs\n"));
     }
 }

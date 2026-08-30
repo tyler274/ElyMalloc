@@ -1,6 +1,6 @@
 //! Size classes matching mimalloc v3 (73 bins, ~12.5% spacing).
 
-use crate::{BIN_HUGE, LARGE_MAX_OBJ_SIZE, PTR_SIZE};
+use crate::{BIN_HUGE, LARGE_MAX_OBJ_SIZE, MAX_ALIGN_SIZE, PTR_SIZE};
 
 pub const BIN_COUNT: usize = BIN_HUGE + 1;
 pub const LARGE_MAX_OBJ_WSIZE: usize = LARGE_MAX_OBJ_SIZE / PTR_SIZE;
@@ -13,14 +13,33 @@ pub const fn wsize_from_size(size: usize) -> usize {
     (size + PTR_SIZE - 1) / PTR_SIZE
 }
 
+/// C `MI_ALIGN4W`: 32-bit with 16-byte `max_align_t`.
+const ALIGN4W: bool = MAX_ALIGN_SIZE > 2 * PTR_SIZE;
+/// C `MI_ALIGN2W`: 64-bit with 16-byte `max_align_t`.
+const ALIGN2W: bool = MAX_ALIGN_SIZE > PTR_SIZE && MAX_ALIGN_SIZE <= 2 * PTR_SIZE;
+
 #[inline]
 pub fn bin_for_size(size: usize) -> usize {
     let mut wsize = wsize_from_size(size);
-    if wsize <= 8 {
+    // Round small sizes so block_size is a multiple of MAX_ALIGN_SIZE (except
+    // the 1-word bin used for malloc(0)+padding). 24-byte classes are 8-aligned
+    // on every other block; hashbrown `movdqa` requires 16.
+    if ALIGN4W {
+        if wsize <= 4 {
+            return if wsize <= 1 { 1 } else { (wsize + 1) & !1 };
+        }
+    } else if ALIGN2W {
+        if wsize <= 8 {
+            return if wsize <= 1 { 1 } else { (wsize + 1) & !1 };
+        }
+    } else if wsize <= 8 {
         return if wsize == 0 { 1 } else { wsize };
     }
     if wsize > LARGE_MAX_OBJ_WSIZE {
         return BIN_HUGE;
+    }
+    if ALIGN4W && wsize <= 16 {
+        wsize = (wsize + 3) & !3;
     }
     wsize -= 1;
     let b = (usize::BITS as usize - 1) - (wsize.leading_zeros() as usize);
@@ -96,13 +115,25 @@ mod tests {
     #[test]
     fn small_bins_are_word_multiples() {
         init_bin_sizes();
-        // Bins 1..=8 are one word each; the byte range is pointer-size dependent.
+        // First eight word sizes map into bins 1..=8 (ALIGN2W/4W skip odd bins).
         for bytes in 1..=(8 * PTR_SIZE) {
             let bin = bin_for_size(bytes);
             assert!(bin >= 1 && bin <= 8, "size {bytes} -> bin {bin}");
             assert_eq!(bin_size(bin) % PTR_SIZE, 0);
             assert!(bin_size(bin) >= bytes);
         }
+    }
+
+    #[test]
+    fn align2w_skips_24_byte_class() {
+        init_bin_sizes();
+        if !ALIGN2W {
+            return;
+        }
+        // C `(wsize+1)&~1` for wsize<=8: 24-byte requests share the 32-byte bin.
+        assert_eq!(bin_for_size(24), bin_for_size(32));
+        assert_eq!(bin_size(bin_for_size(24)), 32);
+        assert_eq!(bin_size(bin_for_size(16)), 16);
     }
 
     #[test]
