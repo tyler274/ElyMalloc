@@ -13,3 +13,4 @@ When continuing the Rust mimalloc rewrite, keep this on the backlog until done:
 - Compiler-suite **rustc** must be compared against **C mimalloc and stock jemalloc**, not only C mimalloc.
 - Those rustc (and GCC/Clang) suite cases must **run** under `LD_PRELOAD` and match the system malloc's **stdout, stderr, and exit code**. Compile/link success is not a substitute.
 - Keep musl Linux working while WASM and the browser checks land.
+- **Vulkan Memory Allocator (VMA) ABI in Rust:** a Rust implementation with an equivalent ABI to AMD's [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (same `vma*` / `Vma*` entry points and types as `vk_mem_alloc.h`), so GPU heaps can be managed with the same drop-in story as this CPU malloc rewrite. Not a substitute for the CPU allocator work above.

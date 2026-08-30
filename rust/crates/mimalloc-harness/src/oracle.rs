@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::compare::outputs_match;
 use crate::failset::{fail_names, only_in_left, rustc_fail_names};
-use crate::process::{compile, run_captured, run_captured_preload, write_all};
+use crate::process::{compile, run_captured, run_captured_preload};
 use crate::{env_is_one, repo_root, rust_root};
 
 pub const JEMALLOC_CANDIDATES: &[&str] = &[
@@ -56,6 +56,17 @@ fn find_jemalloc() -> Result<PathBuf> {
         }
     }
     bail!("oracle-suites: stock jemalloc not found (set JEMALLOC_SO)");
+}
+
+pub fn try_jemalloc() -> Option<PathBuf> {
+    find_jemalloc().ok()
+}
+
+/// C mimalloc built with `MI_SECURE=FULL` (cached under `target/compiler-stress`).
+pub fn c_mimalloc_secure_so() -> Result<PathBuf> {
+    let cache = rust_root().join("target/compiler-stress");
+    std::fs::create_dir_all(&cache)?;
+    build_c_oracle(&cache, &repo_root())
 }
 
 fn build_c_oracle(cache: &Path, repo: &Path) -> Result<PathBuf> {
@@ -117,46 +128,6 @@ fn glob_so(dir: &Path, name: &str) -> Result<PathBuf> {
     bail!("no {name}");
 }
 
-fn rustc_lld_repeat(tag: &str, so: &Path, cache: &Path) -> Result<()> {
-    let n: u32 = std::env::var("RUSTC_LLD_REPEAT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(12);
-    let src = cache.join("rust-src/tests/ui/unsafe/unsafe-fn-called-from-unsafe-blk.rs");
-    let rustc = match which::which("rustc") {
-        Ok(p) if src.is_file() => p,
-        _ => {
-            println!("  skip rustc-lld-repeat {tag}");
-            return Ok(());
-        }
-    };
-    println!("==> rustc-lld repeat x{n} ({tag})");
-    let mut ok = 0u32;
-    let mut crash = 0u32;
-    for i in 1..=n {
-        let out = cache.join(format!("r-lld-{tag}-{i}"));
-        let st = Command::new(&rustc)
-            .args(["--edition", "2021", "-O", "-o"])
-            .arg(&out)
-            .arg(&src)
-            .env("LD_PRELOAD", so)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()?;
-        if st.success() {
-            ok += 1;
-        } else {
-            crash += 1;
-        }
-        let _ = std::fs::remove_file(&out);
-    }
-    println!("  rustc-lld-repeat {tag}: ok={ok} abort={crash}");
-    let dir = cache.join("results").join(tag);
-    std::fs::create_dir_all(&dir)?;
-    write_all(&dir.join("lld-repeat.txt"), &format!("{ok} {crash}\n"))?;
-    Ok(())
-}
-
 pub fn run() -> Result<()> {
     let rust = rust_root();
     let repo = repo_root();
@@ -167,25 +138,18 @@ pub fn run() -> Result<()> {
     }
     let suites = std::env::var("SUITES").unwrap_or_else(|_| "all".into());
 
-    println!("==> build Rust libmimalloc.so");
-    let st = crate::process::cargo_in_root()
-        .args(["build", "--release", "-p", "mimalloc-c"])
-        .status()?;
-    if !st.success() {
-        bail!("cargo build mimalloc-c failed");
-    }
-    let rust_so = rust.join("target/release/libmimalloc.so");
-    if !rust_so.is_file() {
-        bail!("missing {rust_so:?}");
-    }
+    println!("==> build Rust libmimalloc.so and libmimalloc-secure.so");
+    let (rust_so, rust_secure_so) = crate::process::build_mimalloc_cdylibs()?;
     let c_so = build_c_oracle(&cache, &repo)?;
     let je_so = find_jemalloc()?;
-    println!("rust so:     {}", rust_so.display());
-    println!("c so:        {}", c_so.display());
-    println!("jemalloc so: {}", je_so.display());
+    println!("rust so:        {}", rust_so.display());
+    println!("rust secure so: {}", rust_secure_so.display());
+    println!("c so:           {}", c_so.display());
+    println!("jemalloc so:    {}", je_so.display());
 
     if suites != "rustc" {
         run_c_abi("rust", &rust_so, false, false)?;
+        run_c_abi("rust-secure", &rust_secure_so, false, false)?;
         run_c_abi("c", &c_so, true, true)?;
     }
 
@@ -217,10 +181,12 @@ pub fn run() -> Result<()> {
     )?;
 
     oracle_run_match("rust-smoke", &rust_so, &smoke, &cache)?;
+    oracle_run_match("rust-secure-smoke", &rust_secure_so, &smoke, &cache)?;
     oracle_run_match("c-smoke", &c_so, &smoke, &cache)?;
     oracle_run_match("jemalloc-smoke", &je_so, &smoke, &cache)?;
     for (name, so) in [
         ("rust-stress", &rust_so),
+        ("rust-secure-stress", &rust_secure_so),
         ("c-stress", &c_so),
         ("jemalloc-stress", &je_so),
     ] {
@@ -231,9 +197,8 @@ pub fn run() -> Result<()> {
         println!("  ok   {name}");
     }
 
-    rustc_lld_repeat("rust", &rust_so, &cache)?;
-    rustc_lld_repeat("c", &c_so, &cache)?;
-    rustc_lld_repeat("jemalloc", &je_so, &cache)?;
+    crate::linkers::run_global_alloc_per_linker(&cache)?;
+    crate::linkers::stress_linkers_under_preload(&rust_so, &rust_secure_so, &c_so, &je_so, &cache)?;
 
     let rustc_only = suites == "rustc";
     let je_skip_c = !env_is_one("JEMALLOC_FULL");

@@ -1,0 +1,11 @@
+[package]
+name = "mimalloc-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "GlobalAlloc malloc microbench (time + user instruction counts)"
+
+[dependencies]
+mimalloc-core = { path = "../mimalloc-core" }
+libc.workspace = true

@@ -48,8 +48,17 @@
         };
     in
     {
-      overlays.default = final: _prev: {
+      overlays.default = final: prev: {
         mimalloc = final.callPackage ./rust/package.nix { };
+        # Rebuild mold with the rewrite statically linked (nixpkgs mold
+        # otherwise DT_NEEDEDs C libmimalloc-secure).
+        mold-unwrapped = final.callPackage ./rust/mold.nix {
+          inherit (prev) mold-unwrapped;
+          # Don't re-run the mimalloc C ABI suite just to link mold.
+          mimalloc = final.mimalloc.overrideAttrs (_: {
+            doCheck = false;
+          });
+        };
       };
 
       packages = forAllSystems (
@@ -60,6 +69,8 @@
         {
           default = pkgs.mimalloc;
           mimalloc = pkgs.mimalloc;
+          mold = pkgs.mold;
+          mold-unwrapped = pkgs.mold-unwrapped;
           mimalloc-musl = pkgs.callPackage ./rust/package.nix {
             rustPlatform = muslRustPlatform pkgs;
             cargoTarget = muslTargetFor pkgs;
@@ -72,6 +83,30 @@
         # `buildRustPackage` runs cargo tests + C ABI / LD_PRELOAD checks.
         glibc = self.packages.${system}.mimalloc;
         musl = self.packages.${system}.mimalloc-musl;
+        mold =
+          let
+            pkgs = pkgsFor system;
+            moldBin = pkgs.mold-unwrapped;
+          in
+          pkgs.runCommand "mold-mimalloc-static" {
+            nativeBuildInputs = [
+              pkgs.gcc
+              pkgs.binutils
+              moldBin
+            ];
+          } ''
+            mold --version
+            if readelf -d ${moldBin}/bin/mold | grep NEEDED | grep -q libmimalloc; then
+              echo "mold still DT_NEEDED libmimalloc" >&2
+              exit 1
+            fi
+            nm ${moldBin}/bin/mold | grep -q ' mi_malloc'
+            echo 'int main(void) { return 0; }' > t.c
+            gcc -fuse-ld=mold t.c -o t
+            ./t
+            mkdir -p $out
+            echo ok > $out/ok
+          '';
       });
 
       devShells = forAllSystems (
@@ -95,6 +130,9 @@
               pkgs.gcc
               pkgs.clang
               pkgs.binutils
+              pkgs.lld
+              pkgs.mold
+              pkgs.wild
               pkgs.git
               pkgs.cmake
               pkgs.python3
@@ -102,6 +140,8 @@
               pkgs.gdb
               pkgs.jemalloc
               pkgs.pkgsMusl.stdenv.cc
+              pkgs.hyperfine
+              pkgs.perf
             ];
             shellHook = ''
               export JEMALLOC_SO="${pkgs.jemalloc}/lib/libjemalloc.so"

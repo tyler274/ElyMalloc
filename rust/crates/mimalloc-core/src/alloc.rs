@@ -2,9 +2,11 @@
 
 use crate::bin;
 use crate::heap;
+use crate::mem;
 use crate::os;
 use crate::page::{self, PAGE_MAGIC};
 use crate::page_map;
+use crate::ptrx;
 use crate::tls;
 use crate::{align_up, MAX_ALLOC, PADDING_SIZE, PTR_SIZE};
 use core::ffi::c_char;
@@ -76,7 +78,7 @@ pub unsafe fn calloc(count: usize, size: usize) -> *mut u8 {
     };
     let p = malloc(total);
     if !p.is_null() && total != 0 {
-        ptr::write_bytes(p, 0, total);
+        mem::fill(p, 0, total);
     }
     p
 }
@@ -98,7 +100,7 @@ pub unsafe fn realloc(p: *mut u8, newsize: usize) -> *mut u8 {
         return ptr::null_mut();
     }
     let n = usable.min(newsize);
-    ptr::copy_nonoverlapping(p, q, n);
+    mem::copy(q, p, n);
     free(p);
     q
 }
@@ -335,7 +337,7 @@ pub unsafe fn free_size(p: *mut u8, size: usize) {
 }
 
 pub unsafe fn free_size_aligned(p: *mut u8, size: usize, alignment: usize) {
-    if !p.is_null() && alignment != 0 && (p as usize) % alignment != 0 {
+    if !p.is_null() && alignment != 0 && ptrx::addr_mut(p) % alignment != 0 {
         os::einval();
     }
     free_size(p, size);
@@ -371,7 +373,7 @@ pub unsafe fn rezalloc(p: *mut u8, newsize: usize) -> *mut u8 {
     }
     let q = realloc(p, newsize);
     if !q.is_null() && newsize > old {
-        ptr::write_bytes(q.add(old), 0, newsize - old);
+        mem::fill(q.add(old), 0, newsize - old);
     }
     q
 }
@@ -380,20 +382,20 @@ pub unsafe fn rezalloc_aligned(p: *mut u8, newsize: usize, align: usize) -> *mut
     if p.is_null() {
         let q = malloc_aligned(newsize, align);
         if !q.is_null() {
-            ptr::write_bytes(q, 0, newsize);
+            mem::fill(q, 0, newsize);
         }
         return q;
     }
     let old = usable_size(p as *const u8);
-    if old >= newsize && (p as usize) % align == 0 {
+    if old >= newsize && ptrx::addr_mut(p) % align == 0 {
         return p;
     }
     let q = malloc_aligned(newsize, align);
     if q.is_null() {
         return ptr::null_mut();
     }
-    ptr::write_bytes(q, 0, newsize);
-    ptr::copy_nonoverlapping(p, q, old.min(newsize));
+    mem::fill(q, 0, newsize);
+    mem::copy(q, p, old.min(newsize));
     free(p);
     q
 }
@@ -407,15 +409,15 @@ pub unsafe fn rezalloc_aligned_at(
     if p.is_null() {
         let q = malloc_aligned_at(newsize, align, offset);
         if !q.is_null() {
-            ptr::write_bytes(q, 0, newsize);
+            mem::fill(q, 0, newsize);
         }
         return q;
     }
     let old = usable_size(p as *const u8);
     let aligned_ok = if offset % align == 0 {
-        (p as usize) % align == 0
+        ptrx::addr_mut(p) % align == 0
     } else {
-        (p as usize).wrapping_add(offset) % align == 0
+        ptrx::addr_mut(p).wrapping_add(offset) % align == 0
     };
     if old >= newsize && aligned_ok {
         return p;
@@ -424,8 +426,8 @@ pub unsafe fn rezalloc_aligned_at(
     if q.is_null() {
         return ptr::null_mut();
     }
-    ptr::write_bytes(q, 0, newsize);
-    ptr::copy_nonoverlapping(p, q, old.min(newsize));
+    mem::fill(q, 0, newsize);
+    mem::copy(q, p, old.min(newsize));
     free(p);
     q
 }

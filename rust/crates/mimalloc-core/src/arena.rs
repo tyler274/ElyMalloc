@@ -145,8 +145,8 @@ pub fn contains(arena: *const Arena, p: *const u8) -> bool {
         return false;
     }
     unsafe {
-        let b = (*arena).base as usize;
-        let addr = p as usize;
+        let b = crate::ptrx::addr((*arena).base);
+        let addr = crate::ptrx::addr(p);
         addr >= b && addr < b.wrapping_add((*arena).size)
     }
 }

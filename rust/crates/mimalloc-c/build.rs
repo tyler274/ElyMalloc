@@ -3,8 +3,13 @@ fn main() {
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if os == "linux" {
-        println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libmimalloc.so.3");
-        println!("cargo:rustc-link-arg=-Wl,-soname,libmimalloc.so.3");
+        let soname = if std::env::var("CARGO_FEATURE_SECURE").is_ok() {
+            "libmimalloc-secure.so.3"
+        } else {
+            "libmimalloc.so.3"
+        };
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,{soname}");
+        println!("cargo:rustc-link-arg=-Wl,-soname,{soname}");
     }
     // musl folds pthread and dl into libc; glibc still needs the extra libs.
     if env != "musl" {

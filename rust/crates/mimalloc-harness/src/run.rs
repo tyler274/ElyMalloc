@@ -7,7 +7,8 @@ pub fn run() -> Result<()> {
     cargo_ok(&["test", "-p", "mimalloc-harness"])?;
     cargo_ok(&["test", "-p", "mimalloc-core"])?;
     cargo_ok(&["test", "-p", "mimalloc-wasm-smoke"])?;
-    cargo_ok(&["build", "--release", "-p", "mimalloc-c"])?;
+    cargo_ok(&["test", "-p", "mimalloc-alloc-stress"])?;
+    crate::process::build_mimalloc_cdylibs()?;
     cargo_ok(&["build", "-p", "mimalloc-c"])?;
 
     let rust = crate::rust_root();
@@ -17,6 +18,11 @@ pub fn run() -> Result<()> {
     std::env::set_var("INCLUDE", repo.join("include"));
     std::env::set_var("C_TESTS", rust.join("tests"));
     std::env::set_var("UPSTREAM_TESTS", repo.join("test"));
+    crate::cabi::run()?;
+
+    std::env::remove_var("DEBUG_SO");
+    std::env::set_var("SO", rust.join("target/release/libmimalloc-secure.so"));
+    std::env::set_var("OUT", rust.join("target/c-abi-secure"));
     crate::cabi::run()?;
 
     if !env_is_one("SKIP_WASM_SMOKE") {

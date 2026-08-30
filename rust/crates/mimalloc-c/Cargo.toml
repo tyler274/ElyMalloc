@@ -8,6 +8,9 @@ description = "C ABI and libc malloc override for the Rust mimalloc rewrite"
 [features]
 default = []
 debug-fill = ["mimalloc-core/debug-fill"]
+# SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). Mitigations
+# are always on; this only matches the secure shared-library name.
+secure = []
 
 [dependencies]
 mimalloc-core = { path = "../mimalloc-core" }

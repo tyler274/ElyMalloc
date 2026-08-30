@@ -39,7 +39,9 @@ fn compile(cc: &Path, args: &[&str], srcs: &[&Path], out: &Path) -> Result<()> {
 
 fn soname_link(so: &Path) -> Result<PathBuf> {
     let dir = so.parent().context("so parent")?;
-    let link = dir.join("libmimalloc.so.3");
+    let versioned = crate::process::readelf_soname(so)
+        .unwrap_or_else(|_| crate::process::expected_soname(so).to_string());
+    let link = dir.join(&versioned);
     let _ = std::fs::remove_file(&link);
     symlink(so.file_name().context("so name")?, &link).ok();
     Ok(dir.to_path_buf())
@@ -74,7 +76,13 @@ pub fn run() -> Result<()> {
 
     let sodir = soname_link(&so)?;
     if let Ok(readelf) = which::which("readelf") {
-        let _ = Command::new(readelf).arg("-d").arg(&so).status();
+        let _ = Command::new(&readelf).arg("-d").arg(&so).status();
+        if let Ok(name) = crate::process::readelf_soname(&so) {
+            let want = crate::process::expected_soname(&so);
+            if name != want {
+                bail!("{} SONAME {name}, expected {want}", so.display());
+            }
+        }
     }
     if let Ok(nm) = which::which("nm") {
         let outp = Command::new(nm)

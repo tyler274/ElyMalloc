@@ -1,6 +1,10 @@
-//! Itanium C++ `new`/`delete`. Omitted from the static archive used to
-//! vendor into programs (like mold) that already define these symbols.
-//! The shared library keeps them for `LD_PRELOAD` of C++ processes.
+//! Itanium C++ `operator new` / `operator delete`.
+//!
+//! C mimalloc exports these from both the shared object and the static
+//! archive (strong `T` symbols). They are *not* only in
+//! `mimalloc-new-delete.h`; that header is for a single TU when the
+//! library is linked dynamically. Statically whole-archiving this
+//! archive together with that header is a duplicate-definition error.
 
 use super::*;
 

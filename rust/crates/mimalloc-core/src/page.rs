@@ -1,8 +1,10 @@
 //! Mimalloc-style pages: one size class, local + concurrent free lists.
 
 use crate::arena::{self, Arena};
+use crate::mem;
 use crate::os;
 use crate::page_map;
+use crate::ptrx;
 use crate::{align_up, PADDING_SIZE, PTR_SIZE, SLICE_SIZE};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
@@ -57,11 +59,18 @@ fn fill_enabled() -> bool {
     cfg!(any(debug_assertions, feature = "debug-fill"))
 }
 
+/// C `MI_PADDING_CHECK_BYTES` (`MI_SECURE>=5` or debug): fill slack between the
+/// user size and the canary trailer so a short overflow is visible on `free`.
+#[inline]
+fn padding_check_bytes() -> bool {
+    true
+}
+
 #[inline]
 fn debug_fill(p: *mut u8, size: usize, byte: u8) {
     if fill_enabled() && !p.is_null() && size != 0 {
         unsafe {
-            ptr::write_bytes(p, byte, size);
+            mem::fill(p, byte, size);
         }
     }
 }
@@ -101,8 +110,11 @@ static KEY_SEQ: AtomicU64 = AtomicU64::new(0x9E37_79B9);
 
 unsafe fn init_keys(page: *mut Page) {
     let n = KEY_SEQ.fetch_add(0x9E37, Ordering::Relaxed) as usize;
-    let a = page as usize;
-    (*page).key1 = a.wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as usize).wrapping_add(n) | 1;
+    let a = ptrx::addr_mut(page);
+    (*page).key1 = a
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as usize)
+        .wrapping_add(n)
+        | 1;
     (*page).key2 = (*page).key1.rotate_left(13) ^ n.wrapping_mul(0xA076_1D64_78BD_642Fu64 as usize);
 }
 
@@ -116,14 +128,26 @@ fn rotr(x: usize, k: usize) -> usize {
     x.rotate_right((k & (usize::BITS as usize - 1)) as u32)
 }
 
+/// Encode a pointer address into the free-list next field (C `mi_ptr_encode`).
+/// Integer-only so Kani can prove the roundtrip without OS mappings.
+#[inline]
+pub(crate) fn encode_addr(key1: usize, key2: usize, addr: usize) -> usize {
+    rotl(addr ^ key2, key1).wrapping_add(key1)
+}
+
+#[inline]
+pub(crate) fn decode_addr(key1: usize, key2: usize, enc: usize) -> usize {
+    rotr(enc.wrapping_sub(key1), key1) ^ key2
+}
+
 #[inline]
 unsafe fn encode_ptr(page: *const Page, p: *mut Block) -> usize {
     let x = if p.is_null() {
-        page as usize
+        ptrx::addr(page)
     } else {
-        p as usize
+        ptrx::addr_mut(p)
     };
-    rotl(x ^ (*page).key2, (*page).key1).wrapping_add((*page).key1)
+    encode_addr((*page).key1, (*page).key2, x)
 }
 
 /// Decode `block.next` and abort if the pointer is outside this page.
@@ -132,12 +156,13 @@ pub unsafe fn block_next(page: *mut Page, block: *mut Block) -> *mut Block {
     if page.is_null() || block.is_null() {
         return ptr::null_mut();
     }
-    let x = (*block).next.wrapping_sub((*page).key1);
-    let p = (rotr(x, (*page).key1) ^ (*page).key2) as *mut Block;
-    if p as usize == page as usize {
+    let decoded = decode_addr((*page).key1, (*page).key2, (*block).next);
+    if decoded == ptrx::addr(page as *const Page) {
         return ptr::null_mut();
     }
-    if !contains(page, p as *const u8) || !is_block_start(page, p as *const u8) {
+    // Encrypted next pointers are addresses, not live references.
+    let p: *mut Block = ptrx::with_exposed(decoded);
+    if !contains(page, p.cast()) || !is_block_start(page, p.cast()) {
         os::efault();
     }
     p
@@ -222,7 +247,9 @@ unsafe fn unprotect_meta_guards(page: *mut Page) {
 }
 
 fn shuffle_usize(x: usize) -> usize {
-    x.wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as usize).rotate_left(13) ^ (x >> 7)
+    x.wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as usize)
+        .rotate_left(13)
+        ^ (x >> 7)
 }
 
 /// Randomized free list (C `mi_page_free_list_extend_secure`, `MI_SECURE>=2`).
@@ -517,9 +544,9 @@ pub unsafe fn contains(page: *mut Page, ptr: *const u8) -> bool {
     if page.is_null() || ptr.is_null() {
         return false;
     }
-    let start = (*page).area as usize;
+    let start = ptrx::addr((*page).area);
     let end = start + ((*page).capacity as usize) * (*page).block_size;
-    let addr = ptr as usize;
+    let addr = ptrx::addr(ptr);
     addr >= start && addr < end
 }
 
@@ -532,7 +559,7 @@ pub unsafe fn is_block_start(page: *mut Page, ptr: *const u8) -> bool {
     if bs == 0 {
         return false;
     }
-    let off = (ptr as usize) - ((*page).area as usize);
+    let off = ptrx::addr(ptr) - ptrx::addr((*page).area);
     off % bs == 0
 }
 
@@ -578,9 +605,9 @@ pub unsafe fn write_padding(p: *mut u8, user_size: usize) {
     let pad = padding_ptr(page, p);
     (*pad).canary = canary(page, p);
     (*pad).delta = delta as u32;
-    if fill_enabled() && (*page).capacity != 1 && delta != 0 {
-        let n = delta.min(16);
-        ptr::write_bytes(p.add(user), DEBUG_PADDING, n);
+    if padding_check_bytes() && (*page).capacity != 1 && delta != 0 {
+        let n = delta.min(crate::MAX_ALIGN_SIZE);
+        mem::fill(p.add(user), DEBUG_PADDING, n);
     }
 }
 
@@ -616,8 +643,8 @@ pub unsafe fn usable_size(page: *mut Page, p: *const u8) -> usize {
         if bs <= os {
             return 0;
         }
-        let guard = (*page).area as usize + bs - os;
-        let addr = p as usize;
+        let guard = ptrx::addr((*page).area) + bs - os;
+        let addr = ptrx::addr(p);
         if addr >= guard {
             return 0;
         }
@@ -667,15 +694,12 @@ pub unsafe fn check_free(page: *mut Page, p: *mut u8) -> bool {
     }
     match decode_padding(page, p) {
         Some((delta, _)) => {
-            if fill_enabled() && (*page).capacity != 1 && delta != 0 {
+            if padding_check_bytes() && (*page).capacity != 1 && delta != 0 {
                 let user = bsize - delta;
-                let n = delta.min(16);
-                let fill = p.add(user);
-                for i in 0..n {
-                    if *fill.add(i) != DEBUG_PADDING {
-                        os::efault_report();
-                        return false;
-                    }
+                let n = delta.min(crate::MAX_ALIGN_SIZE);
+                if !mem::eq_filled(p.add(user), DEBUG_PADDING, n) {
+                    os::efault_report();
+                    return false;
                 }
             }
             (*pad).canary = CANARY_FREED;
@@ -721,7 +745,7 @@ pub unsafe fn arm_guarded(page: *mut Page, obj_size: usize) -> *mut u8 {
     let guard = area.add(bs - os);
     let _ = os::protect(guard, os);
     let p = guard.sub(obj_size);
-    if (p as usize) < (area as usize) + core::mem::size_of::<Block>() {
+    if ptrx::addr(p) < ptrx::addr(area) + core::mem::size_of::<Block>() {
         os::unprotect(guard, os);
         return ptr::null_mut();
     }

@@ -1,8 +1,9 @@
 //! C ABI and libc malloc override (`cdylib` / `staticlib`).
 //!
 //! Exports both `mi_*` names and the standard allocator symbols so the
-//! resulting `libmimalloc.so` can be used with `LD_PRELOAD` or as a
-//! drop-in for NixOS `environment.memoryAllocator.provider = "mimalloc"`.
+//! resulting `libmimalloc.so` / `libmimalloc-secure.so` can be used with
+//! `LD_PRELOAD` or as a drop-in for NixOS `environment.memoryAllocator.provider = "mimalloc"`.
+//! `--features secure` sets SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE`).
 
 #![cfg_attr(not(test), no_std)]
 #![allow(non_snake_case)]
@@ -2254,122 +2255,12 @@ pub unsafe extern "C" fn __posix_memalign(
     mi_posix_memalign(p, alignment, size)
 }
 
-// Itanium C++ new/delete (64-bit)
-#[no_mangle]
-pub unsafe extern "C" fn _ZdlPv(p: *mut c_void) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdaPv(p: *mut c_void) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdlPvm(p: *mut c_void, _n: usize) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdaPvm(p: *mut c_void, _n: usize) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _Znwm(n: usize) -> *mut c_void {
-    mi_new(n)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _Znam(n: usize) -> *mut c_void {
-    mi_new(n)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZnwmRKSt9nothrow_t(n: usize, _tag: *const c_void) -> *mut c_void {
-    mi_new_nothrow(n)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZnamRKSt9nothrow_t(n: usize, _tag: *const c_void) -> *mut c_void {
-    mi_new_nothrow(n)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZnwmSt11align_val_t(n: usize, al: usize) -> *mut c_void {
-    mi_new_aligned(n, al)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZnamSt11align_val_t(n: usize, al: usize) -> *mut c_void {
-    mi_new_aligned(n, al)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZnwmSt11align_val_tRKSt9nothrow_t(
-    n: usize,
-    al: usize,
-    _tag: *const c_void,
-) -> *mut c_void {
-    mi_new_aligned_nothrow(n, al)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZnamSt11align_val_tRKSt9nothrow_t(
-    n: usize,
-    al: usize,
-    _tag: *const c_void,
-) -> *mut c_void {
-    mi_new_aligned_nothrow(n, al)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdlPvSt11align_val_t(p: *mut c_void, _al: usize) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdaPvSt11align_val_t(p: *mut c_void, _al: usize) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdlPvmSt11align_val_t(p: *mut c_void, _n: usize, _al: usize) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdaPvmSt11align_val_t(p: *mut c_void, _n: usize, _al: usize) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdlPvRKSt9nothrow_t(p: *mut c_void, _tag: *const c_void) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdaPvRKSt9nothrow_t(p: *mut c_void, _tag: *const c_void) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdlPvSt11align_val_tRKSt9nothrow_t(
-    p: *mut c_void,
-    _al: usize,
-    _tag: *const c_void,
-) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn _ZdaPvSt11align_val_tRKSt9nothrow_t(
-    p: *mut c_void,
-    _al: usize,
-    _tag: *const c_void,
-) {
-    mi_free(p);
-}
+// Itanium C++ new/delete (64-bit). Same strong symbols as C mimalloc's
+// shared/static libraries. Programs that `#include <mimalloc-new-delete.h>`
+// must not also statically whole-archive this library (mold does that
+// include only for a *dynamic* system mimalloc).
+#[path = "cxx_new_delete.rs"]
+mod cxx_new_delete;
 
 // GNU constructor so we init before most other libraries.
 #[used]

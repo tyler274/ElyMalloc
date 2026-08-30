@@ -23,6 +23,10 @@ enum Cmd {
     CompilerPreload,
     /// Rust vs C mimalloc vs jemalloc oracle
     Oracle,
+    /// GNU ld, gold, LLD, mold, Wild + GlobalAlloc stress
+    Linkers,
+    /// Wall-clock and instruction-count malloc comparison
+    Bench,
 }
 
 fn main() {
@@ -33,6 +37,8 @@ fn main() {
         Cmd::WasmSmoke => mimalloc_harness::wasm_smoke::run(),
         Cmd::CompilerPreload => mimalloc_harness::preload::run(),
         Cmd::Oracle => mimalloc_harness::oracle::run(),
+        Cmd::Linkers => mimalloc_harness::linkers::run(),
+        Cmd::Bench => mimalloc_harness::bench::run(),
     };
     if let Err(e) = r {
         eprintln!("{e:#}");

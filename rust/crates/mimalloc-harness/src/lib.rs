@@ -3,12 +3,14 @@
 //! Drivers live in this crate so filters, output comparison, FAIL-set diffs,
 //! and WASM import checks can be unit-tested without shell.
 
+pub mod bench;
 pub mod cabi;
 pub mod compare;
 pub mod crash;
 pub mod failset;
 pub mod filter;
 pub mod ids;
+pub mod linkers;
 pub mod normalize;
 pub mod oracle;
 pub mod preload;

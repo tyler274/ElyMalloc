@@ -9,7 +9,7 @@ cd rust
 cargo build --release -p mimalloc-c
 ```
 
-This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`.
+This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `cargo build --release -p mimalloc-c --features secure` produces the same mitigations with SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). The harness copies that to `target/release/libmimalloc-secure.so`.
 
 `cargo check` is clean for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, and `wasm32-unknown-unknown`. Musl cannot emit a `cdylib` unless `-C target-feature=-crt-static` is set (see `.cargo/config.toml`); `c_char` is `u8` on ARM, so path buffers use `libc::c_char` rather than `i8`.
 
@@ -29,6 +29,9 @@ nix flake check
 nix build .#checks.x86_64-linux.glibc
 nix build .#checks.x86_64-linux.musl
 nix build .#mimalloc-musl
+# rebuild mold with this library statically linked:
+nix build .#mold
+nix build .#checks.x86_64-linux.mold
 ```
 
 Compiler suites vs C mimalloc and stock jemalloc (needs `cmake`; `wasmtime` is not required):
@@ -40,7 +43,7 @@ SUITES=rustc ./tests/oracle-suites.sh
 # same as: cargo run -p mimalloc-harness -- oracle
 ```
 
-This builds C mimalloc with `MI_SECURE=FULL`, locates stock `libjemalloc.so` (`JEMALLOC_SO` or nixpkgs), runs the C ABI and C++ tests against the mimalloc libraries, then compiles GCC / Clang / rustc suite programs **once with the system toolchain** and runs those same binaries under `LD_PRELOAD` of each allocator. A test PASSes only if stdout, stderr, and exit code match a run of the same binary on the system malloc. FAIL sets must not grow vs C mimalloc or jemalloc. `./tests/compiler-preload.sh` is the Rust-only slice. Jemalloc skips GCC/Clang C torture unless `JEMALLOC_FULL=1`. Compiling rustc itself under the allocator (lld races) is a separate `rustc-lld-repeat` check.
+This builds C mimalloc with `MI_SECURE=FULL`, locates stock `libjemalloc.so` (`JEMALLOC_SO` or nixpkgs), runs the C ABI and C++ tests against the mimalloc libraries, then compiles GCC / Clang / rustc suite programs **once with the system toolchain** and runs those same binaries under `LD_PRELOAD` of each allocator. A test PASSes only if stdout, stderr, and exit code match a run of the same binary on the system malloc. FAIL sets must not grow vs C mimalloc or jemalloc. `./tests/compiler-preload.sh` is the Rust-only slice. Jemalloc skips GCC/Clang C torture unless `JEMALLOC_FULL=1`. The oracle also links a `#[global_allocator]` stress binary with GNU ld (bfd), gold, LLVM LLD, mold, and Wild, and compiles rustc/gcc under `LD_PRELOAD` of each allocator for those linkers (`./tests/linkers.sh` / `cargo run -p mimalloc-harness -- linkers`). Nixpkgs mold is dynamically linked to C `libmimalloc-secure`; the flake overlay rebuilds mold with this rewrite **statically** linked (`nix build .#mold`). That mold has no `DT_NEEDED` mimalloc; `mi_malloc` is in the binary. `LD_PRELOAD` of another mimalloc onto it is skipped (two copies of the allocator in one process).
 
 ## WASM
 
@@ -78,14 +81,42 @@ The flake overlay replaces `pkgs.mimalloc` with this library:
 
 ## Secure mitigations
 
-Always on (inspired by C `-DMI_SECURE=FULL`): encoded free lists, padding canaries, double-free detection, randomized page free lists, guard pages around page metadata **and at the end of every mimalloc page**, and ASLR-style gaps between OS mappings. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`.
+Always on (inspired by C `-DMI_SECURE=FULL`): encoded free lists, padding canaries, slack-byte overflow checks (`0xDE`), double-free detection, randomized page free lists, guard pages around page metadata **and at the end of every mimalloc page**, and ASLR-style gaps between OS mappings. Encoded free-list next pointers use `ptr::addr` / `with_exposed_provenance_mut` rather than `as usize` / `as *mut`. Padding fill/compare uses SSE2 (x86_64) or NEON (aarch64). Lengths ≥ 64 bytes use AVX-512 (`AVX512F`+`AVX512BW`) when the CPU and OS enable ZMM state — including Zen 5 — otherwise SSE2. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`. Install both `libmimalloc.so.3` and `libmimalloc-secure.so.3` so programs that `DT_NEEDED` the secure SONAME (for example nixpkgs mold) can `LD_PRELOAD` or replace the C library.
 
-Release builds can enable C-style debug fill (`0xD0` / `0xDF` / `0xDE`) with `--features debug-fill` (off by default; it is always on in the debug profile).
+Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features debug-fill` (off by default; it is always on in the debug profile).
 
 ## LD_PRELOAD compiler stress
 
 `tests/compiler-preload.sh` (Rust crate `mimalloc-harness`) compiles GCC, Clang, and rustc suite programs with the system toolchain, then runs the **same binaries** with `LD_PRELOAD`. PASS means stdout, stderr, and exit status match the system malloc — compile success is not enough. Cases that already fail with the system malloc are skipped so only allocator regressions count. `tests/oracle-suites.sh` repeats the runs under C mimalloc (`MI_SECURE=FULL`) and stock jemalloc (same binaries) and requires the Rust FAIL set to be a subset of both. Harness filters and output comparison are unit-tested (`cargo test -p mimalloc-harness`).
 
+## Formal verification (Kani)
+
+`mimalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, and free-list `encode_addr`/`decode_addr` (integer roundtrip). Host `cargo test -p mimalloc-core` covers the same properties with fixed inputs. Kani is not in nixpkgs; install it yourself, then:
+
+```
+cargo install --locked kani-verifier
+cargo kani setup
+./tests/kani.sh
+# or: cargo kani -p mimalloc-core
+```
+
+Proofs stay on pure integer helpers (`addr` / `with_exposed_provenance_mut` for encoded free-list next pointers). SIMD fill/compare/copy (`core::arch` SSE2/NEON/AVX-512) is `cfg(not(kani))` so the verifier does not have to model vector instructions.
+
+## Benchmarks
+
+Same C binary under `LD_PRELOAD` of each malloc (glibc, Rust `libmimalloc.so`, Rust `libmimalloc-secure.so`, C mimalloc `MI_SECURE=FULL`, jemalloc), plus `#[global_allocator]` via `mimalloc-bench`. Reports wall time (`CLOCK_MONOTONIC`) and user-mode instruction counts (`perf_event_open` `PERF_COUNT_HW_INSTRUCTIONS`; 0 if the kernel denies counters). `BENCH_N` divides iteration counts (default `1`).
+
+```
+cd rust
+./tests/bench.sh
+# or: cargo run -p mimalloc-harness -- bench
+cargo run --release -p mimalloc-bench
+nix build .#mimalloc   # installs $out/bin/mimalloc-bench
+```
+
+`nix develop` provides `hyperfine` and `perf`. Set `HYPERFINE=1` to also run hyperfine on the C bench binary for each allocator.
+
 ## Later
 
 - Compare **C mimalloc vs this Rust rewrite** as the process allocator for **Firefox, Chromium, and Electron** (startup, multi-process, and a short browsing/CI smoke on each).
+- **Vulkan Memory Allocator ABI in Rust:** implement a GPU heap manager with an equivalent ABI to AMD [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (`vma*` / `Vma*` as in `vk_mem_alloc.h`).

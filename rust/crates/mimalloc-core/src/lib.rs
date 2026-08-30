@@ -9,14 +9,18 @@ mod bin;
 pub mod global;
 mod heap;
 pub mod hooks;
+mod mem;
 pub mod options;
 mod os;
 mod page;
 mod page_map;
+mod ptrx;
 mod spin;
 pub mod stats;
 pub mod subproc;
 mod tls;
+#[cfg(any(kani, test))]
+mod verify;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -84,6 +88,7 @@ pub use alloc::{
     strdup, strndup, ufree, umalloc, urealloc, usable_size, valloc, VERSION,
 };
 pub use arena::{self as mi_arena, Arena};
+pub use global::Mimalloc;
 pub use heap::{
     any_heap_contains, collect_all, heap_collect, heap_contains, heap_delete, heap_destroy,
     heap_main, heap_malloc, heap_malloc_aligned, heap_malloc_aligned_at, heap_new,
@@ -97,7 +102,6 @@ pub use heap::{
 pub use options as mi_options;
 pub use stats::{self as mi_stats, Stats};
 pub use subproc::{self as mi_subproc, Subproc, SubprocId};
-pub use global::Mimalloc;
 pub use tls::thread_done;
 
 #[cfg(test)]
@@ -640,12 +644,8 @@ mod tests {
             LAST.store(0, AtomicOrdering::Relaxed);
             let p = alloc::malloc(16);
             assert!(!p.is_null());
-            let page = crate::page_map::get(p);
-            assert!(!page.is_null());
-            let smash = (*page).block_size.saturating_sub(16);
-            if smash != 0 {
-                core::ptr::write_bytes(p.add(16), 0xFF, smash);
-            }
+            // Short overflow into slack (not necessarily the 8-byte trailer).
+            core::ptr::write_bytes(p.add(16), 0xFF, 8);
             alloc::free(p);
             assert_eq!(LAST.load(AtomicOrdering::Relaxed), crate::os::EFAULT);
 
