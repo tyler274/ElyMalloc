@@ -18,6 +18,7 @@ pub mod process;
 pub mod run;
 pub mod wasm;
 pub mod wasm_smoke;
+pub mod world;
 
 use std::path::{Path, PathBuf};
 

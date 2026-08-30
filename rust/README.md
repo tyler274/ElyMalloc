@@ -66,7 +66,7 @@ static ALLOC: Mimalloc = Mimalloc;
 
 ## NixOS
 
-The flake overlay replaces `pkgs.mimalloc` with this library:
+The flake overlay replaces `pkgs.mimalloc` with this library. Mitigations are always on; `mimalloc.override { secureBuild = true; }` is accepted so a live NixOS overlay that used C mimalloc's flag keeps evaluating.
 
 ```nix
 {
@@ -74,10 +74,43 @@ The flake overlay replaces `pkgs.mimalloc` with this library:
   # and in nixos configuration:
   nixpkgs.overlays = [ mimalloc-rs.overlays.default ];
   environment.memoryAllocator.provider = "mimalloc";
+  # or: imports = [ mimalloc-rs.nixosModules.memoryAllocator ];
 }
 ```
 
-`environment.memoryAllocator.provider = "mimalloc"` preloads `${pkgs.mimalloc}/lib/libmimalloc.so`.
+`environment.memoryAllocator.provider = "mimalloc"` writes `${pkgs.mimalloc}/lib/libmimalloc.so` into `/etc/ld-nix.so.preload` (not `LD_PRELOAD`). On this rewrite that path is the Rust `cdylib`.
+
+### World packages (build + run)
+
+A representative slice of NixOS CLI packages is built from nixpkgs and **run** under `LD_PRELOAD` of the rewrite (hello, coreutils, git, curl, python3, perl, gcc/g++, …). Compile/link success is not enough.
+
+```
+nix build .#world-preload
+nix build .#checks.x86_64-linux.world-preload
+# PATH programs on this machine:
+cd rust && cargo run -p mimalloc-harness -- world
+./tests/nixos-world.sh
+```
+
+A NixOS VM boots with the same `memoryAllocator` option (glibc reads `/etc/ld-nix.so.preload`):
+
+```
+nix build .#nixos-malloc
+```
+
+Firefox / Chromium / Electron remain a separate smoke: they often cannot share `ld-nix.so.preload` with a system malloc (see the live host's allocator-exclusion wraps).
+
+### Live system
+
+**Session (does not switch the OS).** This host already preloads C mimalloc via `/etc/ld-nix.so.preload`. Stacking that with another `LD_PRELOAD` is two allocators. `nix run .#live` hides the preload in a mount namespace (bubblewrap) and then preloads the rewrite:
+
+```
+nix run .#live -- git --version
+nix run .#live -- python3 -c 'print(sum(range(10000)))'
+nix run .#live          # shell with the rewrite
+```
+
+**Whole OS.** Import the overlay (after or instead of `prev.mimalloc.override { secureBuild = true; }`) and keep `environment.memoryAllocator.provider = "mimalloc"`, then `nixos-rebuild test` (or `boot` / `switch`). Mozilla/Chromium/Electron wraps that bind-mount an empty preload file stay valid.
 
 ## Secure mitigations
 

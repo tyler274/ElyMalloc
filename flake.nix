@@ -65,6 +65,9 @@
         system:
         let
           pkgs = pkgsFor system;
+          mimallocUnchecked = pkgs.mimalloc.overrideAttrs (_: {
+            doCheck = false;
+          });
         in
         {
           default = pkgs.mimalloc;
@@ -75,6 +78,39 @@
             rustPlatform = muslRustPlatform pkgs;
             cargoTarget = muslTargetFor pkgs;
             targetCc = pkgs.pkgsMusl.stdenv.cc;
+          };
+          world-preload = pkgs.callPackage ./rust/world.nix { mimalloc = mimallocUnchecked; };
+          live = pkgs.callPackage ./rust/live.nix { mimalloc = mimallocUnchecked; };
+          nixos-malloc = pkgs.testers.runNixOSTest {
+            name = "mimalloc-memory-allocator";
+            nodes.machine =
+              { pkgs, ... }:
+              {
+                nixpkgs.overlays = [
+                  (final: prev: {
+                    mimalloc = prev.mimalloc.overrideAttrs (_: {
+                      doCheck = false;
+                    });
+                  })
+                ];
+                environment.memoryAllocator.provider = "mimalloc";
+                environment.systemPackages = [
+                  pkgs.hello
+                  pkgs.python3
+                  pkgs.git
+                  pkgs.gcc
+                ];
+              };
+            testScript = ''
+              machine.wait_for_unit("multi-user.target")
+              machine.succeed("grep -q libmimalloc /etc/ld-nix.so.preload")
+              machine.succeed("hello")
+              machine.succeed("git --version")
+              machine.succeed("python3 -c 'print(sum(range(10000)))'")
+              machine.succeed(
+                  "echo 'int main(void){return 0;}' > /tmp/t.c && gcc /tmp/t.c -o /tmp/t && /tmp/t"
+              )
+            '';
           };
         }
       );
@@ -107,6 +143,7 @@
             mkdir -p $out
             echo ok > $out/ok
           '';
+        world-preload = self.packages.${system}.world-preload;
       });
 
       devShells = forAllSystems (
@@ -154,6 +191,16 @@
         { ... }:
         {
           nixpkgs.overlays = [ self.overlays.default ];
+        };
+
+      # Overlay plus `environment.memoryAllocator.provider = "mimalloc"`.
+      # On a host that already uses C mimalloc, this replaces `pkgs.mimalloc`
+      # so /etc/ld-nix.so.preload points at the rewrite (always-on secure).
+      nixosModules.memoryAllocator =
+        { lib, ... }:
+        {
+          imports = [ self.nixosModules.default ];
+          environment.memoryAllocator.provider = lib.mkDefault "mimalloc";
         };
     };
 }

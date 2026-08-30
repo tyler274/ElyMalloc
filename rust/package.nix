@@ -3,6 +3,9 @@
   rustPlatform,
   stdenv,
   binutils,
+  # NixOS `mimalloc.override { secureBuild = true; }` (C package). Mitigations
+  # are always on here; the flag is accepted so the live overlay keeps working.
+  secureBuild ? true,
   # When set (musl check/package), compile with this rustc target and musl cc
   # rather than rebuilding rustc against musl.
   cargoTarget ? null,

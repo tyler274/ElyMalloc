@@ -27,6 +27,8 @@ enum Cmd {
     Linkers,
     /// Wall-clock and instruction-count malloc comparison
     Bench,
+    /// Typical NixOS-world CLI packages under LD_PRELOAD
+    World,
 }
 
 fn main() {
@@ -39,6 +41,7 @@ fn main() {
         Cmd::Oracle => mimalloc_harness::oracle::run(),
         Cmd::Linkers => mimalloc_harness::linkers::run(),
         Cmd::Bench => mimalloc_harness::bench::run(),
+        Cmd::World => mimalloc_harness::world::run(),
     };
     if let Err(e) = r {
         eprintln!("{e:#}");

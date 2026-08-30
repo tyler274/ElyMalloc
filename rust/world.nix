@@ -3,7 +3,6 @@
 # and are opted out on the live host). Compile/link success is not enough:
 # each binary must run.
 {
-  lib,
   mimalloc,
   hello,
   coreutils,
