@@ -49,7 +49,7 @@ int main(void) {
   mi_heap_destroy(h);
 
   mi_arena_id_t arena = NULL;
-  if (mi_reserve_os_memory_ex(2 * 1024 * 1024, true, false, true, &arena) != 0) {
+  if (mi_reserve_os_memory_ex(64 * 1024 * 1024, true, false, true, &arena) != 0) {
     die("reserve_os_memory_ex");
   }
   if (arena == NULL) die("arena id");
@@ -75,11 +75,11 @@ int main(void) {
 
   {
     void* mem = NULL;
-    if (posix_memalign(&mem, 64 * 1024, 2 * 1024 * 1024) != 0 || mem == NULL) {
+    if (posix_memalign(&mem, 64 * 1024, 64 * 1024 * 1024) != 0 || mem == NULL) {
       die("posix_memalign manage backing");
     }
     mi_arena_id_t managed = NULL;
-    if (!mi_manage_os_memory_ex(mem, 2 * 1024 * 1024, true, false, false, -1, true, &managed)) {
+    if (!mi_manage_os_memory_ex(mem, 64 * 1024 * 1024, true, false, false, -1, true, &managed)) {
       die("manage_os_memory_ex");
     }
     mi_heap_t* hm = mi_heap_new_in_arena(managed);

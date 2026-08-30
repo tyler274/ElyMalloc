@@ -1,0 +1,10 @@
+[package]
+name = "mimalloc-wasm-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "libc-less WASM GlobalAlloc smoke for mimalloc-core"
+
+[dependencies]
+mimalloc-core = { path = "../mimalloc-core" }

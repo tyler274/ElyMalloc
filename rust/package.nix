@@ -58,8 +58,11 @@ rustPlatform.buildRustPackage {
   checkPhase = ''
     runHook preCheck
     cargo test --offline -p mimalloc-core --release ${targetFlag}
+    cargo test --offline -p mimalloc-wasm-smoke --release ${targetFlag}
+    cargo test --offline -p mimalloc-harness --release ${targetFlag}
     ${lib.optionalString (cargoTarget == null) ''
     cargo check --offline -p mimalloc-core --target wasm32-unknown-unknown
+    cargo check --offline -p mimalloc-wasm-smoke --target wasm32-unknown-unknown
     ''}
     cargo build --release -p mimalloc-c ${targetFlag}
 
@@ -85,7 +88,7 @@ rustPlatform.buildRustPackage {
     export C_TESTS=${./tests}
     export UPSTREAM_TESTS=${../test}
     export OUT="$TMPDIR/mi-c-abi"
-    bash ${./tests/c-abi.sh}
+    cargo run --offline --release ${targetFlag} -p mimalloc-harness -- c-abi
     runHook postCheck
   '';
 

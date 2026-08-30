@@ -10,5 +10,6 @@ When continuing the Rust mimalloc rewrite, keep this on the backlog until done:
 - Compare **C mimalloc vs the Rust rewrite** as the process allocator (`LD_PRELOAD` / NixOS `memoryAllocator`) for **Firefox**, **Chromium**, and **Electron**.
 - For each app, check startup, multi-process child allocators, and a short browsing or CI smoke — not only that the binary launches.
 - Do not treat compiler-suite `LD_PRELOAD` stress as a substitute for these three apps.
-- Make the allocator work in **WASM** (`wasm32-unknown-unknown` and WASI/`wasm32-wasip1`): a non-mmap OS backend, no pthreads requirement, and a `GlobalAlloc` path for `wasm32` binaries. Keep musl Linux working while that lands.
-- Smoke that WASM `GlobalAlloc` path in a browser and/or `wasmtime` WASI program (the `memory.grow` backend compiles; this is the remaining runtime check).
+- Compiler-suite **rustc** must be compared against **C mimalloc and stock jemalloc**, not only C mimalloc.
+- Those rustc (and GCC/Clang) suite cases must **run** under `LD_PRELOAD` and match the system malloc's **stdout, stderr, and exit code**. Compile/link success is not a substitute.
+- Keep musl Linux working while WASM and the browser checks land.

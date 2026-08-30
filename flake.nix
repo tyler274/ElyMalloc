@@ -83,6 +83,8 @@
             targets = [
               pkgs.stdenv.hostPlatform.rust.rustcTarget
               muslTarget
+              "wasm32-unknown-unknown"
+              "wasm32-wasip1"
             ];
           };
         in
@@ -94,8 +96,16 @@
               pkgs.clang
               pkgs.binutils
               pkgs.git
+              pkgs.cmake
+              pkgs.python3
+              pkgs.wasmtime
+              pkgs.gdb
+              pkgs.jemalloc
               pkgs.pkgsMusl.stdenv.cc
             ];
+            shellHook = ''
+              export JEMALLOC_SO="${pkgs.jemalloc}/lib/libjemalloc.so"
+            '';
           };
         }
       );

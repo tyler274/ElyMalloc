@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/mimalloc-core", "crates/mimalloc-c"]
+members = [
+    "crates/mimalloc-core",
+    "crates/mimalloc-c",
+    "crates/mimalloc-wasm-smoke",
+    "crates/mimalloc-harness",
+]
+default-members = ["crates/mimalloc-core", "crates/mimalloc-c"]
 
 [workspace.package]
 version = "3.5.0"

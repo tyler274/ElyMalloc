@@ -18,6 +18,7 @@ This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`.
 ```
 cd rust
 ./tests/run.sh
+# or: cargo test -p mimalloc-harness && cargo run -p mimalloc-harness -- run
 ```
 
 Nix orchestrates the same suite (glibc and musl) as flake checks. Musl uses `rust-overlay` for `rust-std` so we do not rebuild rustc against musl:
@@ -30,16 +31,28 @@ nix build .#checks.x86_64-linux.musl
 nix build .#mimalloc-musl
 ```
 
-`./tests/compiler-preload.sh` is an extra GCC/Clang/rustc `LD_PRELOAD` slice (fetches compiler tests; not part of `nix flake check`).
+Compiler suites vs C mimalloc and stock jemalloc (needs `cmake`; `wasmtime` is not required):
+
+```
+./tests/oracle-suites.sh
+# rustc UI only, still under Rust / C mimalloc / jemalloc:
+SUITES=rustc ./tests/oracle-suites.sh
+# same as: cargo run -p mimalloc-harness -- oracle
+```
+
+This builds C mimalloc with `MI_SECURE=FULL`, locates stock `libjemalloc.so` (`JEMALLOC_SO` or nixpkgs), runs the C ABI and C++ tests against the mimalloc libraries, then compiles GCC / Clang / rustc suite programs **once with the system toolchain** and runs those same binaries under `LD_PRELOAD` of each allocator. A test PASSes only if stdout, stderr, and exit code match a run of the same binary on the system malloc. FAIL sets must not grow vs C mimalloc or jemalloc. `./tests/compiler-preload.sh` is the Rust-only slice. Jemalloc skips GCC/Clang C torture unless `JEMALLOC_FULL=1`. Compiling rustc itself under the allocator (lld races) is a separate `rustc-lld-repeat` check.
 
 ## WASM
 
 `mimalloc-core` targets `wasm32-unknown-unknown` and `wasm32-wasip1` with **no libc, C toolchain, or emscripten**. The OS layer grows linear memory (`memory.grow`); `munmap` cannot shrink it. Threads and `mprotect` guards are no-ops (single process heap).
 
 ```
-rustup target add wasm32-unknown-unknown
-cargo check -p mimalloc-core --target wasm32-unknown-unknown
+rustup target add wasm32-unknown-unknown wasm32-wasip1
+# also: cargo check -p mimalloc-core --target wasm32-unknown-unknown
+./tests/wasm-smoke.sh
 ```
+
+`wasm-smoke.sh` (or `cargo run -p mimalloc-harness -- wasm-smoke`) builds a `#[global_allocator]` program for both wasm targets, asserts the module does not import libc `malloc`, runs it under `wasmtime`, and runs `mimalloc-core` unit tests on `wasm32-wasip1`.
 
 ```rust
 use mimalloc_core::Mimalloc;
@@ -71,12 +84,8 @@ Release builds can enable C-style debug fill (`0xD0` / `0xDF` / `0xDE`) with `--
 
 ## LD_PRELOAD compiler stress
 
-`tests/compiler-preload.sh` rebuilds this library, then runs programs compiled by GCC, Clang, and rustc with `LD_PRELOAD=libmimalloc.so`. C torture cases that already abort with the system malloc are skipped so only allocator regressions count.
-
-First slice (this machine): GCC `gcc.c-torture/execute` 1446/1446, Clang 1405/1405, plus host smoke/stress and `cargo test -p mimalloc-core` under preload. The full GCC/LLVM/rustc DejaGNU/`llvm-lit`/`x.py` suites are still later.
+`tests/compiler-preload.sh` (Rust crate `mimalloc-harness`) compiles GCC, Clang, and rustc suite programs with the system toolchain, then runs the **same binaries** with `LD_PRELOAD`. PASS means stdout, stderr, and exit status match the system malloc — compile success is not enough. Cases that already fail with the system malloc are skipped so only allocator regressions count. `tests/oracle-suites.sh` repeats the runs under C mimalloc (`MI_SECURE=FULL`) and stock jemalloc (same binaries) and requires the Rust FAIL set to be a subset of both. Harness filters and output comparison are unit-tested (`cargo test -p mimalloc-harness`).
 
 ## Later
 
-- Stress-test this library as a drop-in malloc (`LD_PRELOAD` / NixOS `memoryAllocator`) against the **full** GCC, LLVM, and rustc test suites (a first `LD_PRELOAD` slice lives in `tests/compiler-preload.sh`).
 - Compare **C mimalloc vs this Rust rewrite** as the process allocator for **Firefox, Chromium, and Electron** (startup, multi-process, and a short browsing/CI smoke on each).
-- Smoke the WASM `GlobalAlloc` path in a browser/`wasmtime` WASI program (the `memory.grow` backend already compiles for `wasm32-unknown-unknown`).

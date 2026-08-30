@@ -96,7 +96,8 @@ mod tests {
     #[test]
     fn small_bins_are_word_multiples() {
         init_bin_sizes();
-        for bytes in 1..=64 {
+        // Bins 1..=8 are one word each; the byte range is pointer-size dependent.
+        for bytes in 1..=(8 * PTR_SIZE) {
             let bin = bin_for_size(bytes);
             assert!(bin >= 1 && bin <= 8, "size {bytes} -> bin {bin}");
             assert_eq!(bin_size(bin) % PTR_SIZE, 0);
