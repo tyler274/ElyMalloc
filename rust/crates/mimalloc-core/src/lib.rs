@@ -1,4 +1,36 @@
-//! Pure-Rust mimalloc-inspired allocator core (`no_std`, no `alloc` crate).
+//! Pure-Rust mimalloc core (`no_std`, no `alloc` crate).
+//!
+//! Drop-in for C mimalloc **v3.5.0**: same size classes, page sizes, padding,
+//! and `mi_*` semantics. Security mitigations that C gates behind `MI_SECURE`
+//! (encoded free lists, guard pages, overflow/double-free checks) are always on.
+//!
+//! # Layout
+//!
+//! | Type | C | Role |
+//! |------|---|------|
+//! | `Page` | `mi_page_t` | One size class; local + concurrent free lists |
+//! | [`Theap`] | `mi_theap_t` | Thread-local owner of pages; allocate only from this thread |
+//! | [`Heap`] | `mi_heap_t` | First-class heap; may have a theap per thread |
+//! | [`Arena`] | `mi_arena_t` | Reserved OS region; exclusive heaps bump-allocate slices |
+//! | [`Subproc`] | `mi_subproc_t` | Groups heaps (inspired; memory is not fully partitioned) |
+//!
+//! `free` of a pointer from any thread is allowed. Allocation and
+//! `realloc` of a given theap must run on the thread that owns it.
+//!
+//! # Invariants
+//!
+//! - Every user pointer lives in a 64 KiB-aligned *slice*. The page map
+//!   maps each slice to its `Page` (or null). `free(NULL)` and foreign
+//!   pointers are no-ops.
+//! - A page holds equal-sized blocks. `used - |thread_free|` is the number
+//!   of live blocks; after collecting the concurrent list,
+//!   `used + |local_free| == capacity`.
+//! - Free-list `next` fields are encoded with per-page keys
+//!   (`((p^k2) <<< k1) + k1`). Decode that is outside the page aborts.
+//! - Every non-guarded block ends with an 8-byte `{canary, delta}` trailer
+//!   so `usable_size` is byte-precise and overflow/double-free is detectable.
+//! - `malloc(n)` returns at least [`MAX_ALIGN_SIZE`] (16) aligned. Requests
+//!   larger than [`MAX_ALLOC`] (`PTRDIFF_MAX`) fail with `ENOMEM`.
 
 #![no_std]
 #![allow(clippy::missing_safety_doc)]
@@ -24,34 +56,49 @@ mod verify;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// Pointer / word size (`MI_INTPTR_SIZE`).
 pub const PTR_SIZE: usize = core::mem::size_of::<usize>();
+/// Arena slice is 64 KiB (`MI_ARENA_SLICE_SHIFT`). Page-map key and page alignment.
 pub const SLICE_SHIFT: usize = 16;
+/// `MI_SMALL_PAGE_SIZE` / `MI_ARENA_SLICE_SIZE`.
 pub const SLICE_SIZE: usize = 1 << SLICE_SHIFT;
+/// `MI_MEDIUM_PAGE_SIZE` (512 KiB).
 pub const MEDIUM_PAGE_SIZE: usize = 8 * SLICE_SIZE;
+/// `MI_LARGE_PAGE_SIZE` (4 MiB on 64-bit).
 pub const LARGE_PAGE_SIZE: usize = PTR_SIZE * MEDIUM_PAGE_SIZE;
+/// Largest object that still uses a size-class page (`MI_LARGE_MAX_OBJ_SIZE`, ≤ 512 KiB).
 pub const LARGE_MAX_OBJ_SIZE: usize = LARGE_PAGE_SIZE / 8;
+/// Index of the huge bin; regular classes are `0..BIN_HUGE` (C `MI_BIN_HUGE == 73`).
 pub const BIN_HUGE: usize = 73;
+/// `MI_MAX_ALLOC_SIZE` / `PTRDIFF_MAX`. Larger requests are `ENOMEM`.
 pub const MAX_ALLOC: usize = isize::MAX as usize;
 /// C `MI_MAX_ALIGN_SIZE` / `alignof(max_align_t)`. `malloc` must return this.
 pub const MAX_ALIGN_SIZE: usize = 16;
 /// 8-byte `{canary, delta}` trailer at the end of every block (C `MI_PADDING`).
 pub const PADDING_SIZE: usize = 8;
+/// Packed as `major*10000 + minor*100 + patch` (C `MI_MALLOC_VERSION` for 3.5.0).
 pub const MI_MALLOC_VERSION: i32 = 30500;
 
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 static INIT_LOCK: spin::SpinLock = spin::SpinLock::new();
 
+/// True after the first successful [`init`] (page map, bins, TLS keys).
 #[inline]
 pub fn is_init_done() -> bool {
     INIT_DONE.load(Ordering::Acquire)
 }
 
+/// Round `x` up to a multiple of `align` (`align` is a power of two).
 #[inline]
 pub fn align_up(x: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
     (x + align - 1) & !(align - 1)
 }
 
+/// Process init: OS page size, size-class table, page map, option defaults, `pthread_atfork`.
+///
+/// Idempotent and re-entrant. Allocation during TLS key creation uses the
+/// bootstrap bump in [`alloc`] so we never recurse into `mmap` via malloc.
 pub fn init() {
     if INIT_DONE.load(Ordering::Acquire) {
         return;
@@ -73,6 +120,9 @@ pub fn init() {
 }
 
 /// Child after `fork`: locks may have been held by threads that do not exist here.
+///
+/// # Safety
+/// Must run only from the `pthread_atfork` child handler, before other threads exist.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn fork_child() {
     INIT_LOCK.force_unlock();

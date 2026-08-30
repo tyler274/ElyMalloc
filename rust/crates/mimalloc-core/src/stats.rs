@@ -1,4 +1,8 @@
 //! Process-wide counters used to fill `mi_stats_t`.
+//!
+//! Updated with relaxed atomics on malloc/free/mmap. [`Stats`] is
+//! layout-compatible with C `MI_STAT_VERSION` 5 so `mi_stats_get` can
+//! be copied into a C `mi_stats_t`.
 
 use core::sync::atomic::{AtomicI64, Ordering};
 
@@ -128,6 +132,7 @@ pub struct Stats {
     pub chunk_bins: [StatCount; CBIN_COUNT],
 }
 
+/// Fill `out` from process-wide atomics (`mi_stats_get`).
 pub unsafe fn fill(out: *mut Stats) {
     if out.is_null() {
         return;

@@ -1,21 +1,28 @@
 //! Strict-provenance helpers.
 //!
 //! Encoded free-list next pointers are integers, not live references. Decode
-//! with [`with_exposed_provenance_mut`] rather than `as *mut T`, and compare
-//! addresses with [`addr`] instead of `as usize` (which exposes provenance).
+//! with [`with_exposed`] rather than `as *mut T`, and compare addresses with
+//! [`addr`] instead of `as usize` (which exposes provenance).
+//!
+//! Invariant: a decoded next pointer is either null (the page address as
+//! sentinel) or a block start inside that page. Out-of-range decode is
+//! treated as heap corruption.
 
 #![allow(dead_code)]
 
+/// Address bits only; does not expose provenance (`pointer::addr`).
 #[inline]
 pub fn addr<T>(p: *const T) -> usize {
     p.addr()
 }
 
+/// Address bits of a `*mut` (same as [`addr`]).
 #[inline]
 pub fn addr_mut<T>(p: *mut T) -> usize {
     p.addr()
 }
 
+/// Rebuild a pointer from an integer address (exposed provenance).
 #[inline]
 pub fn with_exposed<T>(addr: usize) -> *mut T {
     core::ptr::with_exposed_provenance_mut(addr)

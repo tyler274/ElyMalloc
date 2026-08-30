@@ -1,4 +1,10 @@
 //! `mi_option_t` numeric values matching C `include/mimalloc.h`.
+//!
+//! Options are process-wide atomics. Unset values can be overridden from
+//! `MIMALLOC_*` environment variables at [`init`]. Guards (`guarded_min` /
+//! `guarded_max` / sample rate) are honored; many OS-commit options are
+//! accepted for ABI compatibility but do not change this rewrite's always-on
+//! mitigations.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
@@ -58,6 +64,7 @@ pub const NAMES: [&str; 47] = [
 static VALUES: [AtomicI64; OPTION_COUNT] = unsafe { core::mem::zeroed() };
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
+/// Load `MIMALLOC_*` from the environment once.
 pub fn init() {
     if INIT_DONE.swap(true, Ordering::AcqRel) {
         return;
@@ -140,6 +147,7 @@ unsafe fn parse_env(s: *const libc::c_char) -> Option<i64> {
     Some(if neg { -val } else { val })
 }
 
+/// `mi_option_name`.
 pub fn name(option: i32) -> Option<&'static str> {
     NAMES.get(option as usize).copied()
 }
@@ -154,6 +162,7 @@ fn slot(option: i32) -> Option<&'static AtomicI64> {
     }
 }
 
+/// `mi_option_get` / `mi_option_set`. Unknown indices are 0 / ignored.
 pub fn get(option: i32) -> i64 {
     init();
     slot(option).map(|s| s.load(Ordering::Relaxed)).unwrap_or(0)

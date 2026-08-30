@@ -1,4 +1,8 @@
 //! Linux OS primitives via libc syscall wrappers that do not allocate.
+//!
+//! `mmap` is `MAP_PRIVATE|MAP_ANONYMOUS`. Aligned maps over-allocate by
+//! `align + OS page`, then unmap the lead/trail so neighbouring mappings
+//! have a virtual gap (C `_mi_os_get_aligned_hint`).
 
 use super::{mix_rng, random_u64, PROT_NONE, PROT_READ, PROT_WRITE};
 use crate::align_up;
@@ -39,6 +43,7 @@ pub fn gettid() -> u32 {
     unsafe { libc::syscall(libc::SYS_gettid) as u32 }
 }
 
+/// Anonymous mapping; null on failure (does not set errno itself).
 pub unsafe fn mmap_anon(size: usize) -> *mut u8 {
     mmap_anon_prot(size, PROT_READ | PROT_WRITE, 0)
 }
@@ -134,6 +139,7 @@ fn errno_location() -> *mut i32 {
     unsafe { libc::__errno_location() }
 }
 
+/// `mprotect(PROT_NONE)` — used for lead/mid/end guards and sampled guarded allocs.
 pub unsafe fn protect(p: *mut u8, size: usize) -> bool {
     if p.is_null() || size == 0 {
         return true;
@@ -141,6 +147,7 @@ pub unsafe fn protect(p: *mut u8, size: usize) -> bool {
     libc::mprotect(p as *mut libc::c_void, size, PROT_NONE) == 0
 }
 
+/// Restore `PROT_READ|PROT_WRITE` before `munmap` of a guarded region.
 pub unsafe fn unprotect(p: *mut u8, size: usize) -> bool {
     if p.is_null() || size == 0 {
         return true;

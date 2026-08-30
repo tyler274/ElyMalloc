@@ -1,4 +1,16 @@
 //! Two-level page map: each 64 KiB slice of the address space points at a `Page`.
+//!
+//! C can use a *flat* map (`_mi_page_map[addr >> 16]`) or a 2-level tree; this
+//! rewrite always uses two levels so a 48-bit VA does not need a 4 GiB table.
+//!
+//! - L1: `addr >> (16+13)` → pointer to an L2 table (lazily `mmap`'d).
+//! - L2: next 13 bits → `*mut Page` for that slice.
+//!
+//! A multi-slice page (medium/large/huge) stores the *same* `Page*` in every
+//! covered slot (C: offset byte `1 < ofs <= 127` in the flat map). `free`
+//! looks up the user pointer's slice; null means not ours.
+//!
+//! Empty L1 so `free(NULL)` and pre-init frees are safe (C issue #1341).
 
 use crate::os;
 use crate::page::Page;
@@ -25,6 +37,7 @@ fn l1_table() -> *mut AtomicPtr<u8> {
     L1.load(Ordering::Acquire)
 }
 
+/// Reserve the L1 table. Idempotent; later inits lose the race and unmap their copy.
 pub fn init() {
     if !l1_table().is_null() {
         return;
@@ -78,6 +91,7 @@ unsafe fn get_or_create_l2(l1_idx: usize) -> *mut AtomicPtr<Page> {
     }
 }
 
+/// Register every slice in `[base, base+bytes)` as belonging to `page`.
 pub unsafe fn set_range(base: *mut u8, bytes: usize, page: *mut Page) {
     if base.is_null() || bytes == 0 || page.is_null() {
         return;
@@ -95,6 +109,7 @@ pub unsafe fn set_range(base: *mut u8, bytes: usize, page: *mut Page) {
     }
 }
 
+/// Clear those slices (page is being unmapped).
 pub unsafe fn clear_range(base: *mut u8, bytes: usize) {
     if base.is_null() || bytes == 0 {
         return;
@@ -115,6 +130,7 @@ pub unsafe fn clear_range(base: *mut u8, bytes: usize) {
     }
 }
 
+/// Owning page of `ptr`, or null if the slice is unused / map not committed.
 #[inline]
 pub unsafe fn get(ptr: *const u8) -> *mut Page {
     if ptr.is_null() {

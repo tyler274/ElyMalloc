@@ -1,9 +1,22 @@
 //! C ABI and libc malloc override (`cdylib` / `staticlib`).
 //!
-//! Exports both `mi_*` names and the standard allocator symbols so the
-//! resulting `libmimalloc.so` / `libmimalloc-secure.so` can be used with
-//! `LD_PRELOAD` or as a drop-in for NixOS `environment.memoryAllocator.provider = "mimalloc"`.
+//! Thin `extern "C"` wrappers around [`mimalloc_core`]. Exports both `mi_*`
+//! names (C `include/mimalloc.h`) and the standard allocator symbols so
+//! `libmimalloc.so` / `libmimalloc-secure.so` works with `LD_PRELOAD` or as
+//! NixOS `environment.memoryAllocator.provider = "mimalloc"`.
+//!
 //! `--features secure` sets SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE`).
+//! Mitigations in the core are always on; the feature only changes the soname.
+//!
+//! C++ `operator new`/`delete` (`cxx_new_delete`) are strong `T` symbols,
+//! matching C mimalloc's archive — not only `mimalloc-new-delete.h`.
+//!
+//! # Invariants (ABI)
+//!
+//! - `malloc` / `mi_malloc` return 16-aligned pointers or null (`ENOMEM`).
+//! - `free(NULL)` is a no-op; foreign pointers are ignored (not undefined).
+//! - `mi_usable_size` is the user request size from the padding trailer.
+//! - Heap/theap/arena/subproc pointers are the core types, `#[repr(C)]`.
 
 #![cfg_attr(not(test), no_std)]
 #![allow(non_snake_case)]
@@ -61,7 +74,8 @@ unsafe fn emit_cstr(out: *mut c_void, arg: *mut c_void, msg: *const libc::c_char
 }
 
 // ---------------------------------------------------------------------------
-// mimalloc-prefixed API
+// mimalloc-prefixed API (`include/mimalloc.h`)
+// Each function is a C ABI trampoline into `mimalloc_core`.
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
@@ -2108,7 +2122,8 @@ pub unsafe extern "C" fn mi_subproc_heap_stats_print_out(
 }
 
 // ---------------------------------------------------------------------------
-// libc override symbols
+// libc override symbols (`malloc`, `free`, `posix_memalign`, …)
+// Must be strong `T` so `LD_PRELOAD` interposes glibc/musl.
 // ---------------------------------------------------------------------------
 
 #[no_mangle]

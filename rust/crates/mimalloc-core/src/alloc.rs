@@ -1,4 +1,12 @@
-//! Public allocation entry points.
+//! Public allocation entry points (`alloc.c` / `free.c` / POSIX).
+//!
+//! Fast path: TLS theap → size class → pop `local_free`. `free` looks up the
+//! page map, checks padding, then either `push_local` (same thread) or
+//! `push_thread_free`.
+//!
+//! During TLS key creation, [`malloc`] uses a static 64 KiB bump so libc
+//! cannot recurse into us (`IN_BOOTSTRAP`). `malloc(0)` still returns a unique
+//! non-null block. `realloc(p, 0)` frees `p` and returns a fresh `malloc(0)`.
 
 use crate::bin;
 use crate::heap;
@@ -35,6 +43,7 @@ unsafe fn bootstrap_alloc(size: usize) -> *mut u8 {
     }
 }
 
+/// Process init (also called from the first `malloc`).
 pub fn init() {
     crate::init();
 }
@@ -48,6 +57,11 @@ unsafe fn heap() -> *mut heap::ThreadHeap {
     h
 }
 
+/// `malloc`: aligned to [`crate::MAX_ALIGN_SIZE`]. Null on OOM (`ENOMEM`).
+///
+/// # Safety
+/// The returned region is uninitialized of length `size`. The padding trailer
+/// after the user size is not part of the usable range.
 #[inline]
 pub unsafe fn malloc(size: usize) -> *mut u8 {
     if tls::IN_BOOTSTRAP.load(Ordering::Acquire) {
@@ -70,6 +84,7 @@ pub unsafe fn malloc(size: usize) -> *mut u8 {
     heap::theap_malloc(h, size)
 }
 
+/// `calloc`: overflow of `count * size` is `ENOMEM`.
 #[inline]
 pub unsafe fn calloc(count: usize, size: usize) -> *mut u8 {
     let Some(total) = count.checked_mul(size) else {
@@ -83,6 +98,8 @@ pub unsafe fn calloc(count: usize, size: usize) -> *mut u8 {
     p
 }
 
+/// `realloc`: null `p` is `malloc`; `newsize == 0` frees and returns `malloc(0)`.
+/// In-place if the existing block already fits (padding-adjusted).
 pub unsafe fn realloc(p: *mut u8, newsize: usize) -> *mut u8 {
     if p.is_null() {
         return malloc(newsize);
@@ -105,6 +122,7 @@ pub unsafe fn realloc(p: *mut u8, newsize: usize) -> *mut u8 {
     q
 }
 
+/// BSD `reallocf`: on failure, free the original pointer.
 pub unsafe fn reallocf(p: *mut u8, newsize: usize) -> *mut u8 {
     let q = realloc(p, newsize);
     if q.is_null() && !p.is_null() && newsize != 0 {
@@ -125,6 +143,7 @@ pub unsafe fn expand(p: *mut u8, newsize: usize) -> *mut u8 {
     }
 }
 
+/// `free`: null and foreign pointers are no-ops. Padding failure does not recycle.
 pub unsafe fn free(p: *mut u8) {
     if p.is_null() {
         return;
@@ -169,6 +188,7 @@ pub unsafe fn free(p: *mut u8) {
     }
 }
 
+/// Byte-precise user size from the padding trailer (`mi_usable_size`).
 pub fn usable_size(p: *const u8) -> usize {
     unsafe {
         if p.is_null() {
@@ -183,11 +203,13 @@ pub fn usable_size(p: *const u8) -> usize {
     }
 }
 
+/// Size class that would be used for `size` (`mi_good_size`).
 pub fn good_size(size: usize) -> usize {
     crate::init();
     bin::good_size(size)
 }
 
+/// `mi_malloc_aligned`: `align` must be a power of two.
 pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
     crate::init();
     if align == 0 || !align.is_power_of_two() {
@@ -205,6 +227,7 @@ pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
     heap::theap_malloc_aligned(h, size, align)
 }
 
+/// `posix_memalign`: `align` must be a power of two ≥ pointer size.
 pub unsafe fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> i32 {
     if out.is_null() {
         return os::EINVAL;
@@ -222,10 +245,12 @@ pub unsafe fn posix_memalign(out: *mut *mut u8, align: usize, size: usize) -> i3
     0
 }
 
+/// `memalign`: same as [`malloc_aligned`].
 pub unsafe fn memalign(align: usize, size: usize) -> *mut u8 {
     malloc_aligned(size, align)
 }
 
+/// C11 `aligned_alloc`: `size` must be a multiple of `align`.
 pub unsafe fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
     if align == 0 || !align.is_power_of_two() || size % align != 0 {
         os::einval();
@@ -234,6 +259,7 @@ pub unsafe fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
     malloc_aligned(size, align)
 }
 
+/// Page-aligned (`valloc`) / rounded up to a page (`pvalloc`).
 pub unsafe fn valloc(size: usize) -> *mut u8 {
     malloc_aligned(size, os::page_size())
 }
@@ -243,6 +269,7 @@ pub unsafe fn pvalloc(size: usize) -> *mut u8 {
     malloc_aligned(align_up(size, ps), ps)
 }
 
+/// `reallocarray`: `ENOMEM` if `count * size` overflows.
 pub unsafe fn reallocarray(p: *mut u8, count: usize, size: usize) -> *mut u8 {
     let Some(total) = count.checked_mul(size) else {
         os::enomem();
@@ -251,6 +278,7 @@ pub unsafe fn reallocarray(p: *mut u8, count: usize, size: usize) -> *mut u8 {
     realloc(p, total)
 }
 
+/// `reallocarr`: writes the new pointer back through `p`.
 pub unsafe fn reallocarr(p: *mut *mut u8, count: usize, size: usize) -> i32 {
     if p.is_null() {
         os::einval();
@@ -264,6 +292,7 @@ pub unsafe fn reallocarr(p: *mut *mut u8, count: usize, size: usize) -> i32 {
     0
 }
 
+/// Heap copy of a C string, including the NUL.
 pub unsafe fn strdup(s: *const c_char) -> *mut c_char {
     if s.is_null() {
         return ptr::null_mut();
@@ -302,6 +331,7 @@ unsafe fn libc_strlen(s: *const c_char) -> usize {
     n
 }
 
+/// `mi_collect` on the default theap.
 pub unsafe fn collect(force: bool) {
     crate::init();
     let h = tls::default_theap();
@@ -336,6 +366,7 @@ pub unsafe fn free_size(p: *mut u8, size: usize) {
     free(p);
 }
 
+/// Like [`free_size`], also `EINVAL` if `p` is not `alignment`-aligned.
 pub unsafe fn free_size_aligned(p: *mut u8, size: usize, alignment: usize) {
     if !p.is_null() && alignment != 0 && ptrx::addr_mut(p) % alignment != 0 {
         os::einval();
@@ -343,10 +374,12 @@ pub unsafe fn free_size_aligned(p: *mut u8, size: usize, alignment: usize) {
     free_size(p, size);
 }
 
+/// `mi_collect_reduce`: this rewrite force-collects every heap.
 pub unsafe fn collect_reduce(_target_thread_owned: usize) {
     heap::collect_all(true);
 }
 
+/// `mi_malloc_aligned` with a non-zero `offset` (`(p + offset) % align == 0`).
 pub unsafe fn malloc_aligned_at(size: usize, align: usize, offset: usize) -> *mut u8 {
     crate::init();
     if align == 0 || !align.is_power_of_two() {
@@ -363,6 +396,7 @@ pub unsafe fn malloc_aligned_at(size: usize, align: usize, offset: usize) -> *mu
     heap::theap_malloc_aligned_at(h, size, align, offset)
 }
 
+/// Zeroing realloc (`mi_rezalloc`).
 pub unsafe fn rezalloc(p: *mut u8, newsize: usize) -> *mut u8 {
     if p.is_null() {
         return calloc(1, newsize);
@@ -432,6 +466,7 @@ pub unsafe fn rezalloc_aligned_at(
     q
 }
 
+/// `mi_umalloc`: like malloc, also writes the usable size.
 pub unsafe fn umalloc(size: usize, block_size: *mut usize) -> *mut u8 {
     let p = malloc(size);
     if !block_size.is_null() {
@@ -444,6 +479,7 @@ pub unsafe fn umalloc(size: usize, block_size: *mut usize) -> *mut u8 {
     p
 }
 
+/// `mi_urealloc`: reports previous and new usable sizes.
 pub unsafe fn urealloc(p: *mut u8, newsize: usize, pre: *mut usize, post: *mut usize) -> *mut u8 {
     if p.is_null() {
         let q = malloc(newsize);
@@ -490,6 +526,7 @@ pub unsafe fn urealloc(p: *mut u8, newsize: usize, pre: *mut usize, post: *mut u
     q
 }
 
+/// `mi_ufree`: writes usable size then frees.
 pub unsafe fn ufree(p: *mut u8, block_size: *mut usize) {
     let sz = usable_size(p as *const u8);
     if !block_size.is_null() {
@@ -498,6 +535,7 @@ pub unsafe fn ufree(p: *mut u8, block_size: *mut usize) {
     free(p);
 }
 
+/// `realpath` that `malloc`s the result when `resolved` is null.
 pub unsafe fn realpath(fname: *const c_char, resolved: *mut c_char) -> *mut c_char {
     #[cfg(target_arch = "wasm32")]
     {
@@ -524,6 +562,7 @@ pub unsafe fn realpath(fname: *const c_char, resolved: *mut c_char) -> *mut c_ch
     }
 }
 
+/// `mi_reserve_os_memory`: create an owned arena of at least `size` bytes.
 pub unsafe fn reserve_os_memory(size: usize, commit: bool, allow_large: bool) -> i32 {
     reserve_os_memory_ex(size, commit, allow_large, false, ptr::null_mut())
 }
@@ -552,6 +591,7 @@ pub unsafe fn reserve_os_memory_ex(
     0
 }
 
+/// `mi_manage_os_memory_ex`: wrap an existing mapping as an arena (not owned).
 pub unsafe fn manage_os_memory_ex(
     start: *mut u8,
     size: usize,
@@ -581,4 +621,5 @@ pub unsafe fn manage_os_memory_ex(
     true
 }
 
+/// Packed version matching [`crate::MI_MALLOC_VERSION`].
 pub const VERSION: i32 = 30500;

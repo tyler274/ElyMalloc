@@ -1,4 +1,15 @@
-//! Per-thread heap: current page per size class plus owned-page lists.
+//! Per-thread heap (`mi_theap_t`) and first-class heap (`mi_heap_t`).
+//!
+//! A **theap** owns pages and is the only context that may allocate. It is
+//! bound to one thread (pthread TLS). A **heap** is the user-facing object
+//! (`mi_heap_new`); its inner theap is created lazily per thread.
+//!
+//! Fast path: `current[bin]` is the page to pop. If empty, walk `lists[bin]`
+//! then allocate a new page. Huge/singleton pages hang off `huge`.
+//!
+//! On thread exit, empty pages are unmapped and in-use pages are *abandoned*
+//! (heap pointer cleared, pushed onto a process-wide list) so a later `free`
+//! from any thread still finds them via the page map.
 
 use crate::arena::{self, Arena};
 use crate::bin::{self, BIN_COUNT};
@@ -9,16 +20,25 @@ use crate::{align_up, os, LARGE_MAX_OBJ_SIZE, MAX_ALLOC, PADDING_SIZE, SLICE_SIZ
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
+/// Thread-local heap (C `mi_theap_t`). Allocate/realloc only from this thread;
+/// `free` of its blocks is allowed from any thread.
 #[repr(C, align(64))]
 pub struct ThreadHeap {
     pub tid: u32,
+    /// Fast-path page per size class (C `pages_free_direct` / current queue head).
     pub current: [*mut Page; BIN_COUNT],
+    /// All owned pages of that class (C `pages[bin]` queue).
     pub lists: [*mut Page; BIN_COUNT],
+    /// Singleton / huge pages (`capacity == 1`).
     pub huge: *mut Page,
     pub next_meta: *mut ThreadHeap,
+    /// Exclusive arena, or null to `mmap` each page.
     pub arena: *mut Arena,
+    /// First-class heap this theap belongs to (may be the implicit main heap).
     pub owner: *mut Heap,
+    /// Monotonic count used as the deferred-free heartbeat (C `heartbeat`).
     pub heartbeat: AtomicU64,
+    /// Calls to the generic path; every 1000, run the deferred-free hook.
     pub generic_count: AtomicU32,
     pub subproc: *mut crate::subproc::Subproc,
     pub stats: AllocStats,
@@ -29,10 +49,12 @@ pub struct ThreadHeap {
     pub in_threadpool: bool,
 }
 
+/// Alias matching C `mi_theap_t`.
 pub type Theap = ThreadHeap;
 
-pub const HEAP_MAGIC: u32 = 0x4D494850;
+pub const HEAP_MAGIC: u32 = 0x4D494850; // 'MIHP'
 
+/// First-class heap (C `mi_heap_t`). The default process heap is [`heap_main`].
 #[repr(C, align(64))]
 pub struct Heap {
     pub magic: u32,
@@ -94,6 +116,7 @@ unsafe fn unregister_heap(h: *mut Heap) {
     }
 }
 
+/// Walk heaps in `subproc` (null = all). Visitor returning false stops the walk.
 pub unsafe fn visit_all_heaps(
     subproc: *mut crate::subproc::Subproc,
     visitor: crate::subproc::HeapVisitFun,
@@ -319,6 +342,7 @@ unsafe fn maybe_deferred_free(h: *mut ThreadHeap) {
     }
 }
 
+/// Allocate from the current page of `bin`, then other owned pages, then a new page.
 pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
     let block_size = bin::bin_size(bin);
     let mut page = (*h).current[bin];
@@ -363,6 +387,7 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
     p
 }
 
+/// Singleton page for objects above [`crate::LARGE_MAX_OBJ_SIZE`] or large alignment.
 pub unsafe fn malloc_huge(h: *mut ThreadHeap, size: usize, align: usize) -> *mut u8 {
     malloc_huge_at(h, size, align, 0)
 }
@@ -483,6 +508,7 @@ pub unsafe fn theap_guarded_set_size_bound(th: *mut ThreadHeap, min: usize, max:
     (*th).guarded_size_max = if min > max { min } else { max };
 }
 
+/// Create the thread's default theap (called from TLS on first malloc).
 pub unsafe fn create() -> *mut ThreadHeap {
     let h = meta_alloc();
     if h.is_null() {
@@ -494,6 +520,7 @@ pub unsafe fn create() -> *mut ThreadHeap {
     h
 }
 
+/// `mi_heap_new`: a heap whose theap is created on first use.
 pub unsafe fn heap_new() -> *mut Heap {
     crate::init();
     let inner = create();
@@ -518,6 +545,7 @@ pub unsafe fn heap_new() -> *mut Heap {
     h
 }
 
+/// `mi_heap_new_in_arena`: pages come from `arena` instead of `mmap`.
 pub unsafe fn heap_new_in_arena(arena: *mut Arena) -> *mut Heap {
     if !arena::is_valid(arena) {
         os::einval();
@@ -536,6 +564,7 @@ pub unsafe fn heap_new_in_arena(arena: *mut Arena) -> *mut Heap {
     h
 }
 
+/// Process default heap (`mi_heap_main`). Created once, never deleted.
 pub unsafe fn heap_main() -> *mut Heap {
     crate::init();
     let existing = MAIN_HEAP.load(Ordering::Acquire);
@@ -565,11 +594,13 @@ pub unsafe fn heap_main() -> *mut Heap {
 }
 
 #[inline]
+/// True if `h` is a live heap (magic + inner theap).
 pub unsafe fn heap_is_ok(h: *const Heap) -> bool {
     !h.is_null() && (*h).magic == HEAP_MAGIC
 }
 
 #[inline]
+/// Inner theap without creating one (`NULL` if this thread has not used `h`).
 pub unsafe fn heap_inner(h: *mut Heap) -> *mut ThreadHeap {
     if !heap_is_ok(h) {
         return ptr::null_mut();
@@ -580,6 +611,7 @@ pub unsafe fn heap_inner(h: *mut Heap) -> *mut ThreadHeap {
     (*h).inner
 }
 
+/// Theap of `h` on this thread, creating one if needed (`mi_heap_get_default` path).
 pub unsafe fn heap_theap(h: *mut Heap) -> *mut Theap {
     if h.is_null() {
         return crate::tls::thread_heap();
@@ -587,6 +619,7 @@ pub unsafe fn heap_theap(h: *mut Heap) -> *mut Theap {
     heap_inner(h)
 }
 
+/// Heap that owns `p`, via the page map (`mi_heap_of`).
 pub unsafe fn heap_of(p: *const u8) -> *mut Heap {
     crate::init();
     if p.is_null() {
@@ -607,6 +640,7 @@ pub unsafe fn heap_of(p: *const u8) -> *mut Heap {
     owner
 }
 
+/// `mi_heap_contains_block`: `p` is in a page whose owner is `h`.
 pub unsafe fn heap_contains(h: *const Heap, p: *const u8) -> bool {
     if p.is_null() || !heap_is_ok(h) {
         return false;
@@ -614,6 +648,7 @@ pub unsafe fn heap_contains(h: *const Heap, p: *const u8) -> bool {
     heap_of(p) == h as *mut Heap
 }
 
+/// `mi_is_in_heap_region`: page map has a live page for `p`.
 pub unsafe fn any_heap_contains(p: *const u8) -> bool {
     !heap_of(p).is_null()
 }
@@ -671,6 +706,7 @@ unsafe fn migrate_thread_heap(src: *mut ThreadHeap, dst: *mut ThreadHeap) {
     (*dst).stats.merge_from(&(*src).stats);
 }
 
+/// `mi_heap_delete`: migrate pages to the main heap, then free the heap object.
 pub unsafe fn heap_delete(h: *mut Heap) {
     if !heap_is_ok(h) {
         return;
@@ -691,6 +727,7 @@ pub unsafe fn heap_delete(h: *mut Heap) {
     free_heap_obj(h);
 }
 
+/// `mi_heap_destroy`: unmap all pages (leaks user pointers), then free the heap.
 pub unsafe fn heap_destroy(h: *mut Heap) {
     if !heap_is_ok(h) {
         return;
@@ -708,6 +745,7 @@ pub unsafe fn heap_destroy(h: *mut Heap) {
     free_heap_obj(h);
 }
 
+/// Allocate `size` bytes from `th` (C `_mi_theap_malloc`).
 pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
     if th.is_null() {
         os::enomem();
@@ -730,6 +768,8 @@ pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
     page::finish_alloc(p, page::request_size(size))
 }
 
+/// Aligned allocate. Size classes whose `block_size` is a multiple of `align`
+/// are used when possible; otherwise a singleton page.
 pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usize) -> *mut u8 {
     if th.is_null() {
         os::enomem();
@@ -788,6 +828,7 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
     }
 }
 
+/// `mi_heap_malloc`.
 pub unsafe fn heap_malloc(h: *mut Heap, size: usize) -> *mut u8 {
     if !heap_is_ok(h) {
         os::enomem();
@@ -800,6 +841,7 @@ pub unsafe fn heap_malloc(h: *mut Heap, size: usize) -> *mut u8 {
     theap_malloc((*h).inner, size)
 }
 
+/// `mi_heap_malloc_aligned`.
 pub unsafe fn heap_malloc_aligned(h: *mut Heap, size: usize, align: usize) -> *mut u8 {
     if !heap_is_ok(h) {
         os::enomem();
@@ -868,6 +910,7 @@ pub unsafe fn theap_collect(th: *mut ThreadHeap, force: bool) {
     collect_heap(th, force);
 }
 
+/// Unmap an empty page unless it is the current-page cache for its bin.
 pub unsafe fn maybe_retire(h: *mut ThreadHeap, page: *mut Page) {
     if page.is_null() {
         return;
@@ -952,23 +995,28 @@ pub unsafe fn force_unlock_all() {
     }
 }
 
+/// `mi_heap_set_default` / `mi_heap_get_default` (theap, not the first-class heap).
 pub unsafe fn theap_set_default(theap: *mut Theap) -> *mut Theap {
     crate::tls::set_default_theap(theap)
 }
 
+/// Current default theap (`mi_heap_get_default`).
 pub unsafe fn theap_get_default() -> *mut Theap {
     crate::tls::default_theap()
 }
 
-/// Matches C `mi_heap_area_t`.
+/// `mi_heap_area_t`: one page as seen by `mi_heap_visit_blocks`.
 #[repr(C)]
 pub struct HeapArea {
+    /// Start of the block area.
     pub blocks: *mut u8,
     pub reserved: usize,
     pub committed: usize,
+    /// Live blocks (`used` after collect is approximate if `thread_free` is unmerged).
     pub used: usize,
     pub block_size: usize,
     pub full_block_size: usize,
+    /// This rewrite stores the `Page*` here for the visitor.
     pub reserved1: *mut core::ffi::c_void,
 }
 
@@ -1096,6 +1144,7 @@ unsafe fn visit_theap_pages(
     true
 }
 
+/// `mi_theap_visit_blocks`.
 pub unsafe fn theap_visit_blocks(
     th: *mut ThreadHeap,
     visit_blocks: bool,
@@ -1160,6 +1209,7 @@ pub unsafe fn heap_visit_abandoned_blocks(
 }
 
 /// Best-effort purge of empty pages on the current heap.
+/// Best-effort purge of empty pages on the current heap (C `mi_collect`).
 pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
     if h.is_null() {
         return;
@@ -1229,6 +1279,7 @@ pub unsafe fn heap_stats_merge_to_subproc(h: *mut Heap) {
     (*(*h).subproc).stats.take_from(&(*(*h).inner).stats);
 }
 
+/// `mi_heap_set_numa_affinity`. Negative `numa_node` means any node.
 pub unsafe fn heap_set_numa_affinity(h: *mut Heap, numa_node: i32) {
     crate::init();
     let h = if h.is_null() { heap_main() } else { h };
@@ -1245,6 +1296,7 @@ pub unsafe fn heap_numa_node(h: *const Heap) -> i32 {
     (*h).numa_node
 }
 
+/// Hint that this theap is used from a thread pool (C `mi_thread_set_in_threadpool`).
 pub unsafe fn theap_set_in_threadpool(th: *mut ThreadHeap) {
     if th.is_null() {
         return;
@@ -1319,6 +1371,7 @@ pub unsafe fn stats_merge() {
     (*(*th).subproc).stats.take_from(&(*th).stats);
 }
 
+/// Destroy non-main heaps tagged with `s` (`mi_subproc_delete` path).
 pub unsafe fn destroy_heaps_in_subproc(s: *mut crate::subproc::Subproc) {
     if s.is_null() {
         return;

@@ -1,4 +1,13 @@
 //! Size classes matching mimalloc v3 (73 bins, ~12.5% spacing).
+//!
+//! `bin_for_size` matches C `_mi_bin`. Small word sizes are rounded so
+//! `block_size` is a multiple of [`crate::MAX_ALIGN_SIZE`] except the 1-word
+//! bin (`malloc(0)` + padding). On 64-bit, 24-byte requests share the 32-byte
+//! bin (`MI_ALIGN2W`) so every other block is 16-aligned for `movdqa`.
+//!
+//! Page kind: ≤ ~10 KiB → 64 KiB, ≤ ~84 KiB → 512 KiB, else 4 MiB
+//! (C `MI_SMALL/MEDIUM/LARGE_MAX_OBJ_SIZE`). Above [`crate::LARGE_MAX_OBJ_SIZE`]
+//! the huge/singleton path is used.
 
 use crate::{BIN_HUGE, LARGE_MAX_OBJ_SIZE, MAX_ALIGN_SIZE, PTR_SIZE};
 
@@ -8,6 +17,7 @@ pub const LARGE_MAX_OBJ_WSIZE: usize = LARGE_MAX_OBJ_SIZE / PTR_SIZE;
 static mut BIN_SIZES: [usize; BIN_COUNT] = [0; BIN_COUNT];
 static mut BIN_INIT: bool = false;
 
+/// Words needed for `size` (C `_mi_wsize_from_size`).
 #[inline]
 pub const fn wsize_from_size(size: usize) -> usize {
     (size + PTR_SIZE - 1) / PTR_SIZE
@@ -18,6 +28,7 @@ const ALIGN4W: bool = MAX_ALIGN_SIZE > 2 * PTR_SIZE;
 /// C `MI_ALIGN2W`: 64-bit with 16-byte `max_align_t`.
 const ALIGN2W: bool = MAX_ALIGN_SIZE > PTR_SIZE && MAX_ALIGN_SIZE <= 2 * PTR_SIZE;
 
+/// Size-class index for `size` bytes (C `_mi_bin`). Huge objects return [`BIN_HUGE`].
 #[inline]
 pub fn bin_for_size(size: usize) -> usize {
     let mut wsize = wsize_from_size(size);
@@ -46,6 +57,7 @@ pub fn bin_for_size(size: usize) -> usize {
     ((b << 2) + ((wsize >> (b - 2)) & 0x03)) - 3
 }
 
+/// Fill `BIN_SIZES` so `bin_size(b)` is the largest request that maps to `b`.
 pub fn init_bin_sizes() {
     unsafe {
         if BIN_INIT {
@@ -67,6 +79,7 @@ pub fn init_bin_sizes() {
     }
 }
 
+/// Block size of `bin` (not including a further huge rounding).
 #[inline]
 pub fn bin_size(bin: usize) -> usize {
     unsafe {
@@ -78,6 +91,7 @@ pub fn bin_size(bin: usize) -> usize {
     }
 }
 
+/// Block size that will actually be used for a request of `size` (includes padding).
 #[inline]
 pub fn good_size(size: usize) -> usize {
     let size = if size == 0 { crate::PTR_SIZE } else { size };

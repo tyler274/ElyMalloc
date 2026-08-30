@@ -1,4 +1,7 @@
-//! `core::alloc::GlobalAlloc` surface for `#[global_allocator]` (including wasm32).
+//! `core::alloc::GlobalAlloc` for `#[global_allocator]` (including wasm32).
+//!
+//! Alignment > 16 uses [`crate::malloc_aligned`]; dealloc ignores layout and
+//! looks the pointer up in the page map (same as `free`).
 
 use crate::alloc as mi;
 use core::alloc::{GlobalAlloc, Layout};

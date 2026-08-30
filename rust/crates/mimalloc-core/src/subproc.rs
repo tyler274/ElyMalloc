@@ -1,5 +1,9 @@
-//! Subprocess isolation: heaps created while a subproc is current stay grouped
-//! for `mi_subproc_visit_heaps`. Memory is not fully partitioned (inspired rewrite).
+//! Subprocess isolation (C `subproc.c`).
+//!
+//! C keeps fully separate arenas per subproc (e.g. multiple Python
+//! interpreters). This rewrite groups heaps created while a subproc is
+//! current so `mi_subproc_visit_heaps` works; OS memory is not partitioned.
+//! The main subproc is created lazily on first use.
 
 use crate::heap::{self, Heap};
 use crate::os;
@@ -19,6 +23,7 @@ pub struct Subproc {
     pub stats: AllocStats,
 }
 
+/// Opaque id matching C `mi_subproc_id_t` (a pointer).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SubprocId {
@@ -68,6 +73,7 @@ unsafe fn meta_free(s: *mut Subproc) {
     META_FREE = s;
 }
 
+/// Process-wide main subproc (`mi_subproc_main`).
 pub unsafe fn main() -> SubprocId {
     crate::init();
     let existing = MAIN.load(Ordering::Acquire);
@@ -111,6 +117,7 @@ fn ensure_key() -> libc::pthread_key_t {
     key
 }
 
+/// Subproc of this thread, or [`main`] if none was set.
 pub unsafe fn current() -> SubprocId {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -135,6 +142,7 @@ pub unsafe fn current_ptr() -> *mut Subproc {
     current().ptr
 }
 
+/// `mi_subproc_new`.
 pub unsafe fn new() -> SubprocId {
     crate::init();
     let s = meta_alloc();
@@ -147,6 +155,7 @@ pub unsafe fn new() -> SubprocId {
     SubprocId { ptr: s }
 }
 
+/// Destroy heaps/arenas tagged with `id`, then recycle the object.
 pub unsafe fn destroy(id: SubprocId) {
     let s = id.ptr;
     if s.is_null() || (*s).magic != SUBPROC_MAGIC {
@@ -174,6 +183,7 @@ pub unsafe fn destroy(id: SubprocId) {
     meta_free(s);
 }
 
+/// Bind this thread to `id` (`mi_subproc_add_current_thread`).
 pub unsafe fn add_current_thread(id: SubprocId) {
     let s = id.ptr;
     if s.is_null() || (*s).magic != SUBPROC_MAGIC {

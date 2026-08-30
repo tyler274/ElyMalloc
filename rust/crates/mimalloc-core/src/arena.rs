@@ -1,5 +1,12 @@
-//! Reserved OS memory regions. Heaps created with `heap_new_in_arena` bump
-//! allocate pages from an exclusive arena instead of calling `mmap` per page.
+//! Reserved OS regions (C `arena.c`).
+//!
+//! C arenas use an atomic bitmap of 64 KiB slices and are shared across
+//! threads. This rewrite bump-allocates from an exclusive arena when a heap
+//! is created with [`heap_new_in_arena`](crate::heap_new_in_arena); otherwise
+//! pages call `mmap` directly. Adopted mappings (`manage`) are not `munmap`'d.
+//!
+//! Arenas are process-shared metadata; the bump is atomic. Slice alignment
+//! is required so the page map can key each 64 KiB.
 
 use crate::os;
 use crate::spin::SpinLock;
@@ -11,11 +18,14 @@ pub const ARENA_MAGIC: u32 = 0x4D494152; // 'MIAR'
 pub const ARENA_MIN_SIZE: usize = 32 * 1024 * 1024;
 pub const ARENA_MIN_ALIGN: usize = SLICE_SIZE;
 
+/// Fixed OS reservation from which exclusive heaps take slices.
 #[repr(C)]
 pub struct Arena {
     pub magic: u32,
+    /// Heaps created in this arena must not fall back to OS `mmap`.
     pub exclusive: bool,
     pub committed: bool,
+    /// True if we `mmap`'d `base` and should `munmap` on destroy.
     pub owned: bool,
     pub base: *mut u8,
     pub size: usize,
@@ -54,6 +64,7 @@ pub fn is_valid(a: *const Arena) -> bool {
     !a.is_null() && unsafe { (*a).magic == ARENA_MAGIC }
 }
 
+/// `mi_reserve_os_memory_ex`: `mmap` a new owned arena.
 pub unsafe fn reserve(
     size: usize,
     commit: bool,
@@ -140,6 +151,7 @@ pub unsafe fn alloc(arena: *mut Arena, size: usize, align: usize) -> *mut u8 {
     }
 }
 
+/// True if `p` lies in `[base, base+size)`.
 pub fn contains(arena: *const Arena, p: *const u8) -> bool {
     if !is_valid(arena) || p.is_null() {
         return false;
@@ -151,6 +163,7 @@ pub fn contains(arena: *const Arena, p: *const u8) -> bool {
     }
 }
 
+/// Base pointer and size (`mi_arena_area`).
 pub fn area(arena: *const Arena, size_out: *mut usize) -> *mut u8 {
     if !is_valid(arena) {
         if !size_out.is_null() {
@@ -242,7 +255,7 @@ pub fn force_unlock() {
     }
 }
 
-/// Unmap arenas created in `subproc` (not `manage_os_memory` adoptions).
+/// Unmap arenas we own that were created in `subproc` (not `manage` adoptions).
 pub unsafe fn destroy_owned_in_subproc(s: *mut crate::subproc::Subproc) {
     if s.is_null() {
         return;

@@ -1,4 +1,36 @@
-//! Mimalloc-style pages: one size class, local + concurrent free lists.
+//! Mimalloc pages: one size class, local + concurrent free lists (C `page.c`).
+//!
+//! A *page* is a 64 KiB / 512 KiB / 4 MiB mapping (or a singleton huge block)
+//! holding equal-sized objects. Metadata sits in the mapping behind OS
+//! `PROT_NONE` guard pages (C `MI_SECURE` / `MI_SECURE=FULL`).
+//!
+//! # Free lists
+//!
+//! C `mi_page_t` keeps three lists:
+//!
+//! - `free` — ready for `malloc` (this rewrite pops `local_free` after
+//!   [`collect`] merges `thread_free`).
+//! - `local_free` — blocks freed by the owning thread; not yet on the alloc path.
+//! - `thread_free` — blocks freed by other threads (lock-free push).
+//!
+//! Accounting (C `types.h`):
+//!
+//! ```text
+//! used - |thread_free|                 == live blocks
+//! used - |thread_free| + |free| + |local_free| == capacity
+//! ```
+//!
+//! Only the owning thread mutates non-atomic fields. Concurrent `free`
+//! pushes onto `thread_free`. An abandoned page (`heap == NULL`) is still
+//! findable via the page map so a later `free` can recycle or destroy it.
+//!
+//! # Encoding
+//!
+//! `Block.next` is not a raw pointer. C `mi_ptr_encode` uses per-page keys
+//! `k1, k2`: `((p ^ k2) <<< k1) + k1`. XOR-only encoding leaks `k1` if `p`
+//! is guessable; the rotate+add is non-associative. Null is encoded as the
+//! page address so `(k2 <<< k1) + k1` is not a common sentinel. Decode that
+//! is not a block start in this page is treated as heap corruption (`EFAULT`).
 
 use crate::arena::{self, Arena};
 use crate::mem;
@@ -9,32 +41,50 @@ use crate::{align_up, PADDING_SIZE, PTR_SIZE, SLICE_SIZE};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
+/// One allocated or free object. Overlay: the first word is the encoded next
+/// pointer while the block is on a free list (C `mi_block_t`).
 #[repr(C)]
 pub struct Block {
-    /// Encoded next pointer (see `block_next` / `block_set_next`).
+    /// Encoded next pointer (see [`block_next`] / [`block_set_next`]).
     pub next: usize,
 }
 
+/// Mimalloc page header (C `mi_page_t`). Cache-line aligned; lives in the
+/// mapping at `map_base + OS_PAGE`, between lead and mid guard pages.
 #[repr(C, align(64))]
 pub struct Page {
+    /// `PAGE_MAGIC` (`'MIPA'`) while the page is live.
     pub magic: u32,
+    /// Bytes per block, including padding. Always `> 0`.
     pub block_size: usize,
+    /// Number of blocks carved from [`Self::area`].
     pub capacity: u32,
+    /// Blocks not on `local_free` (includes those still on `thread_free`).
     pub used: u32,
+    /// Owning-thread free list (encoded `next`). `malloc` pops this.
     pub local_free: *mut Block,
+    /// Concurrent free list from other threads (C `xthread_free`, without the ownership bit).
     pub thread_free: AtomicPtr<Block>,
+    /// Next page of the same size class on the owning theap (or abandoned list).
     pub next: *mut Page,
+    /// Previous page in that doubly-linked list.
     pub prev: *mut Page,
+    /// Owning theap, or null if abandoned (C `theap == NULL`).
     pub heap: AtomicPtr<crate::heap::ThreadHeap>,
+    /// First block. Every block is `block_size` bytes from here.
     pub area: *mut u8,
+    /// `mmap` / arena base, including guards. Page-map keys use this range.
     pub map_base: *mut u8,
+    /// Bytes from [`Self::map_base`]; multiple of [`crate::SLICE_SIZE`].
     pub map_size: usize,
     pub flags: AtomicU32,
+    /// Per-page encode keys (C `page->keys[]`). `key1` is odd.
     pub key1: usize,
     pub key2: usize,
     pub subproc: *mut crate::subproc::Subproc,
 }
 
+/// Live-page sentinel (`'MIPA'`). Cleared implicitly by unmap.
 pub const PAGE_MAGIC: u32 = 0x4D495041; // 'MIPA'
 const FLAG_ABANDONED: u32 = 1;
 const FLAG_ARENA: u32 = 2;
@@ -45,9 +95,16 @@ pub const DEBUG_UNINIT: u8 = 0xD0;
 pub const DEBUG_FREED: u8 = 0xDF;
 pub const DEBUG_PADDING: u8 = 0xDE;
 const DEBUG_FILL_MAX: usize = 1024 * 1024;
+/// C `mi_ptr_encode_canary_freed`: bit 9 set so it cannot match a live canary.
 const CANARY_FREED: u32 = 0x00DEAD00;
+/// C `MI_BLOCK_TAG_GUARDED`: `block.next` of a sampled guarded allocation.
 const BLOCK_TAG_GUARDED: usize = usize::MAX;
 
+/// Trailer at `block + block_size - 8` (C `mi_padding_t`).
+///
+/// `canary` is a truncated encode of the block pointer (lowest byte cleared so
+/// a one-byte overflow is not a valid canary). `delta` is slack between the
+/// user size and the trailer: `usable = block_size - PADDING_SIZE - delta`.
 #[repr(C)]
 struct Padding {
     canary: u32,
@@ -85,6 +142,7 @@ impl Page {
         }
     }
 
+    /// True if the mapping came from an exclusive arena and must not be `munmap`'d.
     #[inline]
     pub fn is_arena(&self) -> bool {
         self.flags.load(Ordering::Relaxed) & FLAG_ARENA != 0
@@ -95,6 +153,7 @@ impl Page {
         self.flags.fetch_or(FLAG_ARENA, Ordering::Release);
     }
 
+    /// Sampled allocation with a `PROT_NONE` OS page after the object (C `MI_GUARDED`).
     #[inline]
     pub fn is_guarded(&self) -> bool {
         self.flags.load(Ordering::Relaxed) & FLAG_GUARDED != 0
@@ -130,11 +189,15 @@ fn rotr(x: usize, k: usize) -> usize {
 
 /// Encode a pointer address into the free-list next field (C `mi_ptr_encode`).
 /// Integer-only so Kani can prove the roundtrip without OS mappings.
+///
+/// `null` is represented as the page address (passed in as `addr` by the
+/// caller), not the integer 0, so the encoded sentinel is not `(k2 <<< k1)+k1`.
 #[inline]
 pub(crate) fn encode_addr(key1: usize, key2: usize, addr: usize) -> usize {
     rotl(addr ^ key2, key1).wrapping_add(key1)
 }
 
+/// Inverse of [`encode_addr`].
 #[inline]
 pub(crate) fn decode_addr(key1: usize, key2: usize, enc: usize) -> usize {
     rotr(enc.wrapping_sub(key1), key1) ^ key2
@@ -151,6 +214,9 @@ unsafe fn encode_ptr(page: *const Page, p: *mut Block) -> usize {
 }
 
 /// Decode `block.next` and abort if the pointer is outside this page.
+///
+/// # Safety
+/// `page` and `block` must be live; `block` belongs to `page`.
 #[inline]
 pub unsafe fn block_next(page: *mut Page, block: *mut Block) -> *mut Block {
     if page.is_null() || block.is_null() {
@@ -168,6 +234,7 @@ pub unsafe fn block_next(page: *mut Page, block: *mut Block) -> *mut Block {
     p
 }
 
+/// Encode `next` (or the page address for null) into `block.next`.
 #[inline]
 pub unsafe fn block_set_next(page: *mut Page, block: *mut Block, next: *mut Block) {
     if block.is_null() {
@@ -193,6 +260,9 @@ unsafe fn unmap_page_memory(base: *mut u8, size: usize, from_arena: bool) {
 
 /// Align the first block so every block is aligned to the largest power of two
 /// that divides `block_size` (needed for `malloc_aligned` over-size classes).
+///
+/// C `MI_PAGE_MIN_START_BLOCK_ALIGN` is 16; power-of-two sizes then stay
+/// naturally aligned up to 4 KiB (`MI_PAGE_MAX_START_BLOCK_ALIGN2`).
 fn block_align(block_size: usize) -> usize {
     if block_size == 0 {
         return 16;
@@ -315,6 +385,9 @@ unsafe fn init_local_free(page: *mut Page, area: *mut u8, bsize: usize, capacity
 }
 
 /// Allocate a page of `map_size` bytes holding equal `block_size` blocks.
+///
+/// Mapping: `[lead PROT_NONE][Page][mid PROT_NONE][blocks…][end PROT_NONE]`.
+/// Registers every 64 KiB slice of `map_base..+map_size` in the page map.
 pub unsafe fn create(block_size: usize, map_size: usize, arena: *mut Arena) -> *mut Page {
     let align = block_align(block_size);
     let (lead, meta, area_off) = meta_prefix(align);
@@ -366,6 +439,9 @@ pub unsafe fn create(block_size: usize, map_size: usize, arena: *mut Arena) -> *
 }
 
 /// Dedicated huge/aligned allocation: one block covering `size` bytes (plus header).
+///
+/// C `MI_PAGE_SINGLETON`: objects `> MI_LARGE_MAX_OBJ_SIZE` or alignment
+/// `> MI_PAGE_MAX_OVERALLOC_ALIGN` (64 KiB). `offset` is for `malloc_aligned_at`.
 pub unsafe fn create_huge(
     size: usize,
     align: usize,
@@ -427,6 +503,7 @@ pub unsafe fn create_huge(
     page
 }
 
+/// Unmap the page: clear the page map, drop guard protection, `munmap` unless arena-backed.
 pub unsafe fn destroy(page: *mut Page) {
     if page.is_null() {
         return;
@@ -445,6 +522,10 @@ pub unsafe fn destroy(page: *mut Page) {
     unmap_page_memory(base, size, from_arena);
 }
 
+/// Move `thread_free` onto `local_free` and subtract from `used` (C `_mi_page_free_collect`).
+///
+/// After this, `used` is the live count and `local_free` is the alloc list.
+/// Aborts if the concurrent list is longer than `capacity` (corruption).
 #[inline]
 pub unsafe fn collect(page: *mut Page) {
     if page.is_null() {
@@ -466,6 +547,7 @@ pub unsafe fn collect(page: *mut Page) {
     (*page).used = (*page).used.saturating_sub(n);
 }
 
+/// Pop one block from `local_free`. Huge pages (`capacity == 1`) return `area` once.
 #[inline]
 pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
     if (*page).capacity == 1 {
@@ -494,6 +576,7 @@ pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
     p
 }
 
+/// Owning-thread free: push onto `local_free` (C `mi_free_block_local`).
 #[inline]
 pub unsafe fn push_local(page: *mut Page, ptr: *mut u8) {
     if (*page).capacity == 1 {
@@ -515,6 +598,7 @@ pub unsafe fn push_local(page: *mut Page, ptr: *mut u8) {
     (*page).used = (*page).used.saturating_sub(1);
 }
 
+/// Other-thread free: lock-free push onto `thread_free` (C `mi_free_block_mt`).
 #[inline]
 pub unsafe fn push_thread_free(page: *mut Page, ptr: *mut u8) {
     debug_fill(
@@ -539,6 +623,7 @@ pub unsafe fn push_thread_free(page: *mut Page, ptr: *mut u8) {
     }
 }
 
+/// True if `ptr` lies in `[area, area + capacity * block_size)`.
 #[inline]
 pub unsafe fn contains(page: *mut Page, ptr: *const u8) -> bool {
     if page.is_null() || ptr.is_null() {
@@ -550,6 +635,7 @@ pub unsafe fn contains(page: *mut Page, ptr: *const u8) -> bool {
     addr >= start && addr < end
 }
 
+/// True if `ptr` is the start of a block (offset from `area` is a multiple of `block_size`).
 #[inline]
 pub unsafe fn is_block_start(page: *mut Page, ptr: *const u8) -> bool {
     if !contains(page, ptr) {
@@ -563,6 +649,7 @@ pub unsafe fn is_block_start(page: *mut Page, ptr: *const u8) -> bool {
     off % bs == 0
 }
 
+/// `malloc(0)` still needs a non-zero block; C treats 0 as one word.
 #[inline]
 pub fn request_size(size: usize) -> usize {
     if size == 0 {
@@ -572,6 +659,7 @@ pub fn request_size(size: usize) -> usize {
     }
 }
 
+/// Size class payload including the padding trailer.
 #[inline]
 pub fn padded_need(size: usize) -> usize {
     request_size(size).saturating_add(PADDING_SIZE)
@@ -587,7 +675,7 @@ unsafe fn padding_ptr(page: *mut Page, block: *mut u8) -> *mut Padding {
     block.add(bsize) as *mut Padding
 }
 
-/// Write the `{canary, delta}` trailer after a successful allocation.
+/// Write the `{canary, delta}` trailer after a successful allocation (C `_mi_padding`).
 pub unsafe fn write_padding(p: *mut u8, user_size: usize) {
     if p.is_null() {
         return;
@@ -611,6 +699,7 @@ pub unsafe fn write_padding(p: *mut u8, user_size: usize) {
     }
 }
 
+/// Stamp padding on a freshly popped block. No-op on null (OOM).
 pub unsafe fn finish_alloc(p: *mut u8, user_size: usize) -> *mut u8 {
     if !p.is_null() {
         write_padding(p, user_size);
@@ -712,6 +801,7 @@ pub unsafe fn check_free(page: *mut Page, p: *mut u8) -> bool {
     }
 }
 
+/// Drop `PROT_NONE` on a guarded object's trailing OS page before `munmap`.
 pub unsafe fn unguard(page: *mut Page) {
     if page.is_null() || !(*page).is_guarded() {
         return;

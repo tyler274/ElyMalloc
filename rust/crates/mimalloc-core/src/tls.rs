@@ -1,9 +1,16 @@
 //! Thread-local heap: pthread keys on Linux, a process heap on wasm32.
+//!
+//! Two keys: the thread's default theap (destructor abandons pages) and
+//! the current default used by `malloc` (`mi_heap_set_default`). During
+//! `pthread_key_create`, [`IN_BOOTSTRAP`] is set so malloc uses a static bump
+//! instead of `mmap` (glibc may allocate from the destructor-registration path).
 
 use crate::heap;
 use core::sync::atomic::{AtomicBool, AtomicU32};
 
+/// True while creating the pthread key; [`alloc::malloc`](crate::alloc::malloc) uses the bump.
 pub static IN_BOOTSTRAP: AtomicBool = AtomicBool::new(false);
+/// Thread that is in bootstrap; other threads spin until [`crate::init`] finishes.
 pub static BOOTSTRAP_TID: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -70,6 +77,7 @@ mod pthread {
         key
     }
 
+    /// Thread's owning theap; the pthread destructor calls `heap::abandon`.
     pub unsafe fn thread_heap() -> *mut ThreadHeap {
         let key = ensure_key();
         let mut h = libc::pthread_getspecific(key) as *mut ThreadHeap;
@@ -83,6 +91,7 @@ mod pthread {
         h
     }
 
+    /// Current default theap for `malloc` (`mi_heap_get_default`).
     pub unsafe fn default_theap() -> *mut ThreadHeap {
         let key = ensure_default_key();
         let t = libc::pthread_getspecific(key) as *mut ThreadHeap;
@@ -149,6 +158,7 @@ mod wasm {
     static THREAD: AtomicPtr<ThreadHeap> = AtomicPtr::new(ptr::null_mut());
     static DEFAULT: AtomicPtr<ThreadHeap> = AtomicPtr::new(ptr::null_mut());
 
+    /// Single process heap (wasm has no threads).
     pub unsafe fn thread_heap() -> *mut ThreadHeap {
         let mut h = THREAD.load(Ordering::Acquire);
         if h.is_null() {

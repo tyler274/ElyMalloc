@@ -1,4 +1,9 @@
 //! OS memory primitives. Linux uses `mmap`; wasm32 uses `memory.grow`.
+//!
+//! Wrappers must not allocate (no libc malloc). Alignment over-maps then
+//! trims lead/trail and optionally jitters the start (C `MI_SECURE` ASLR).
+//! Guard pages use `mprotect(PROT_NONE)`. Errors set `errno` and invoke
+//! [`crate::hooks::error`].
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

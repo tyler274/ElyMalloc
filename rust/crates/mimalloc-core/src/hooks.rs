@@ -1,4 +1,7 @@
 //! User callbacks: deferred free (to reclaim memory) and error reporting.
+//!
+//! C `mi_register_deferred_free` / `mi_register_error`. Both skip re-entrancy
+//! so a callback that allocates or faults cannot recurse into the hook.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -13,11 +16,13 @@ static ERR_ARG: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
 static DEFERRED_RECURSE: AtomicBool = AtomicBool::new(false);
 static ERR_RECURSE: AtomicBool = AtomicBool::new(false);
 
+/// `mi_register_deferred_free`.
 pub fn register_deferred_free(f: *mut c_void, arg: *mut c_void) {
     DEFERRED_ARG.store(arg, Ordering::Release);
     DEFERRED_FN.store(f as *mut (), Ordering::Release);
 }
 
+/// `mi_register_error`.
 pub fn register_error(f: *mut c_void, arg: *mut c_void) {
     ERR_ARG.store(arg, Ordering::Release);
     ERR_FN.store(f as *mut (), Ordering::Release);

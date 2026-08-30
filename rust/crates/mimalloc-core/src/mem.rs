@@ -11,6 +11,7 @@ use core::ptr;
 #[cfg(all(target_arch = "x86_64", not(kani)))]
 const AVX512_MIN: usize = 64;
 
+/// Fill `p[0..n]` with `byte`. Used for debug fill, calloc, padding slack.
 #[inline]
 pub unsafe fn fill(p: *mut u8, byte: u8, n: usize) {
     if p.is_null() || n == 0 {
@@ -27,6 +28,7 @@ pub unsafe fn fill(p: *mut u8, byte: u8, n: usize) {
     ptr::write_bytes(p, byte, n);
 }
 
+/// Non-overlapping copy (realloc).
 #[inline]
 pub unsafe fn copy(dst: *mut u8, src: *const u8, n: usize) {
     if n == 0 || dst.is_null() || src.is_null() {
