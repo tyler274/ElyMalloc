@@ -210,7 +210,12 @@ pub(crate) fn find_bwrap() -> Option<PathBuf> {
     if let Some(p) = env_path("BWRAP").or_else(|| crate::which("bwrap")) {
         return Some(p);
     }
-    for name in ["firefox", "microsoft-edge", "microsoft-edge-stable", "signal-desktop"] {
+    for name in [
+        "firefox",
+        "microsoft-edge",
+        "microsoft-edge-stable",
+        "signal-desktop",
+    ] {
         let Some(p) = crate::which(name) else {
             continue;
         };
@@ -232,7 +237,9 @@ fn which_first(names: &[&str]) -> Option<PathBuf> {
 }
 
 fn env_path(var: &str) -> Option<PathBuf> {
-    std::env::var_os(var).map(PathBuf::from).filter(|p| p.exists())
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
 }
 
 pub fn discover_apps() -> Result<Vec<App>> {
@@ -318,10 +325,7 @@ fn png_ok(path: &Path) -> bool {
 
 fn write_page(dir: &Path) -> Result<PathBuf> {
     let page = dir.join("page.html");
-    fs::write(
-        &page,
-        format!("<html><body>{MARKER}</body></html>\n"),
-    )?;
+    fs::write(&page, format!("<html><body>{MARKER}</body></html>\n"))?;
     Ok(page)
 }
 
@@ -378,10 +382,7 @@ fn spawn_spec(
         .iter()
         .map(|(k, v)| (OsString::from(*k), v.clone()))
         .collect();
-    extra_env.push((
-        OsString::from("HOME"),
-        work.join("home").into_os_string(),
-    ));
+    extra_env.push((OsString::from("HOME"), work.join("home").into_os_string()));
     extra_env.push((
         OsString::from("XDG_CONFIG_HOME"),
         work.join("config").into_os_string(),
@@ -396,8 +397,14 @@ fn spawn_spec(
     ));
     extra_env.push((OsString::from("NO_AT_BRIDGE"), OsString::from("1")));
     extra_env.push((OsString::from("MOZ_NO_REMOTE"), OsString::from("1")));
-    extra_env.push((OsString::from("MOZ_CRASHREPORTER_DISABLE"), OsString::from("1")));
-    extra_env.push((OsString::from("MOZ_DISABLE_CRASH_REPORTER"), OsString::from("1")));
+    extra_env.push((
+        OsString::from("MOZ_CRASHREPORTER_DISABLE"),
+        OsString::from("1"),
+    ));
+    extra_env.push((
+        OsString::from("MOZ_DISABLE_CRASH_REPORTER"),
+        OsString::from("1"),
+    ));
     fs::create_dir_all(work.join("home"))?;
     fs::create_dir_all(work.join("config"))?;
     fs::create_dir_all(work.join("cache"))?;
@@ -736,11 +743,7 @@ pub fn run() -> Result<()> {
 
     let apps = discover_apps()?;
     for a in &apps {
-        println!(
-            "  found {} -> {}",
-            a.kind.label(),
-            a.launcher.display()
-        );
+        println!("  found {} -> {}", a.kind.label(), a.launcher.display());
     }
     let kinds: HashSet<_> = apps.iter().map(|a| a.kind).collect();
     for need in [AppKind::Firefox, AppKind::Chromium, AppKind::Electron] {
@@ -842,7 +845,14 @@ fi
         );
     }
 
-    fn report(alloc: &str, rc: i32, smoke: bool, children: usize, parent_mi: bool, child_mi: bool) -> SmokeReport {
+    fn report(
+        alloc: &str,
+        rc: i32,
+        smoke: bool,
+        children: usize,
+        parent_mi: bool,
+        child_mi: bool,
+    ) -> SmokeReport {
         SmokeReport {
             alloc: alloc.into(),
             rc,
