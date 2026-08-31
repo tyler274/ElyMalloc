@@ -147,9 +147,10 @@ fn run_under_alloc(
     fs::create_dir_all(work.join("run"))?;
     // Bun's glob path-length tests mkdir trees too deep for Nix `path:` inputs
     // (ENAMETOOLONG while hashing this git tree). Keep TMPDIR off the repo.
-    let tmp = std::env::temp_dir()
-        .join("mimalloc-projects")
-        .join(work.file_name().unwrap_or_else(|| std::ffi::OsStr::new("run")));
+    let tmp = std::env::temp_dir().join("mimalloc-projects").join(
+        work.file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("run")),
+    );
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp)?;
     let preload_file = write_preload_file(work, so)?;
