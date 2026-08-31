@@ -29,6 +29,8 @@ enum Cmd {
     Bench,
     /// NixOS-world package tests vs C mimalloc and libc
     World,
+    /// Bun (oven-sh/bun) and Serde test suites vs C mimalloc and libc
+    Projects,
     /// Vulkan Memory Allocator C ABI (virtual allocator + exported vma* symbols)
     Vma,
     /// Firefox / Chromium / Electron vs C mimalloc (startup, child maps, page smoke)
@@ -46,6 +48,7 @@ fn main() {
         Cmd::Linkers => mimalloc_harness::linkers::run(),
         Cmd::Bench => mimalloc_harness::bench::run(),
         Cmd::World => mimalloc_harness::world::run(),
+        Cmd::Projects => mimalloc_harness::projects::run(),
         Cmd::Vma => mimalloc_harness::vma::run(),
         Cmd::Browsers => mimalloc_harness::browsers::run(),
     };

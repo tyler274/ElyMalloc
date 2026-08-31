@@ -127,6 +127,18 @@ nix build .#browsers-preload
 
 A libc control must start, spawn children, and finish the page smoke. The rewrite is compared to C mimalloc (`MI_SECURE=FULL`) on the same recipe: a rewrite-only crash is a FAIL. C mimalloc skips `strdup`/`reallocarray`/`__libc_*` overrides by default (`-DMI_OVERRIDE_LIBC_EXTRAS=OFF`) so PartitionAlloc is not handed foreign pointers; both allocators should complete the smokes. Live-host allocator-exclusion wraps stay required when the OS preloads an older C mimalloc that still exports those aliases.
 
+### Bun and Serde test suites
+
+[Bun](https://github.com/oven-sh/bun/) (`test/js/web`, `test/js/node`, `test/js/bun` slices from the matching `bun-v*` tag) and [Serde](https://github.com/serde-rs/serde) (`cargo test --workspace --all-targets`) are **run** under the rewrite, C mimalloc, and libc. PASS means bun pass/fail/ran counts match libc, and serde stdout/stderr/exit match after stripping durations. Rewrite-only mismatches are FAIL. Cases that crash on system malloc are skipped. Injection matches NixOS (`ld-nix.so.preload` via bubblewrap) and lists both mimalloc SONAMEs.
+
+```
+cd rust
+# nixpkgs bun is used if `bun` is not on PATH
+./tests/projects.sh
+# or: cargo run -p mimalloc-harness -- projects
+# PROJECTS=bun|serde|all  BUN_FULL=1  BUN_TEST='test/js/web/encoding'  BUN_SRC=  SERDE_SRC=
+```
+
 ### Live system
 
 **Session (does not switch the OS).** This host already preloads C mimalloc via `/etc/ld-nix.so.preload`. Stacking that with another `LD_PRELOAD` is two allocators. `nix run .#live` hides the preload in a mount namespace (bubblewrap) and then preloads the rewrite:

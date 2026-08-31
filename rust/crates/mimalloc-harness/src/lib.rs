@@ -16,11 +16,12 @@ pub mod normalize;
 pub mod oracle;
 pub mod preload;
 pub mod process;
+pub mod projects;
 pub mod run;
+pub mod vma;
 pub mod wasm;
 pub mod wasm_smoke;
 pub mod world;
-pub mod vma;
 
 use std::path::{Path, PathBuf};
 
