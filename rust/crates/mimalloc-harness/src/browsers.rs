@@ -676,6 +676,8 @@ fn judge(
                     c.rc,
                     c.smoke_ok
                 );
+            } else {
+                println!("  note: C mimalloc also passed {}", app.kind.label());
             }
         }
         return Ok(());

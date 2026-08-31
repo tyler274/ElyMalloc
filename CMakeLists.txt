@@ -8,6 +8,7 @@ set(MI_SECURE "OFF" CACHE STRING "Use security mitigations (like meta data guard
 set_property(CACHE MI_SECURE PROPERTY STRINGS "OFF" "ON" "FULL")
 
 option(MI_OVERRIDE          "Override the standard malloc interface (i.e. define entry points for 'malloc', 'free', etc)" ON)
+option(MI_OVERRIDE_LIBC_EXTRAS "Also override strdup, reallocarray, and __libc_* (unsafe as the process allocator for Chromium/Electron PartitionAlloc)" OFF)
 option(MI_XMALLOC           "Enable abort() call on memory allocation failure by default" OFF)
 option(MI_SHOW_ERRORS       "Show error and warning messages by default (only enabled by default in DEBUG mode)" OFF)
 option(MI_GUARDED           "Build with guard pages behind certain object allocations (enabled by default in a debug build)" OFF)
@@ -246,6 +247,13 @@ endif()
 
 if(MI_OVERRIDE)
   message(STATUS "Override standard malloc (MI_OVERRIDE=ON)")
+  if(MI_OVERRIDE_LIBC_EXTRAS)
+    message(STATUS "  Also override strdup/reallocarray/__libc_* (MI_OVERRIDE_LIBC_EXTRAS=ON)")
+    list(APPEND mi_defines MI_OVERRIDE_LIBC_EXTRAS=1)
+  else()
+    message(STATUS "  Skip strdup/reallocarray/__libc_* (MI_OVERRIDE_LIBC_EXTRAS=OFF; Chromium PartitionAlloc)")
+    list(APPEND mi_defines MI_OVERRIDE_LIBC_EXTRAS=0)
+  endif()
   if(APPLE)
     if(MI_OSX_ZONE)
       # use zone's on macOS

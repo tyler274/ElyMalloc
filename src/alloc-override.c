@@ -9,6 +9,16 @@ terms of the MIT license. A copy of the license can be found in the file
 #error "this file should be included from 'alloc.c' (so aliases can work)"
 #endif
 
+// Extra libc aliases (`strdup`, `reallocarray`, `__libc_*`). Default off:
+// Chromium/Electron keep PartitionAlloc's `realloc` inside the executable.
+// DSOs still bind those extras to a preloaded allocator, then PA `realloc`s
+// the pointers and SIGSEGVs. Graphene hardened_malloc and the Rust rewrite
+// stay compatible by exporting only the malloc family. `mi_strdup` /
+// `mi_reallocarray` remain on the C API. Restore with -DMI_OVERRIDE_LIBC_EXTRAS=ON.
+#ifndef MI_OVERRIDE_LIBC_EXTRAS
+#define MI_OVERRIDE_LIBC_EXTRAS 0
+#endif
+
 
 #if defined(MI_MALLOC_OVERRIDE) && !defined(_DLL)
 
@@ -74,10 +84,14 @@ typedef void* mi_nothrow_t;
     MI_INTERPOSE_MI(malloc),
     MI_INTERPOSE_MI(calloc),
     MI_INTERPOSE_MI(realloc),
+#if MI_OVERRIDE_LIBC_EXTRAS
     MI_INTERPOSE_MI(strdup),
+#endif
     MI_INTERPOSE_MI(realpath),
     MI_INTERPOSE_MI(posix_memalign),
+#if MI_OVERRIDE_LIBC_EXTRAS
     MI_INTERPOSE_MI(reallocf),
+#endif
     MI_INTERPOSE_MI(valloc),
     MI_INTERPOSE_FUN(malloc_size,mi_malloc_size_checked),
     MI_INTERPOSE_MI(malloc_good_size),
@@ -91,7 +105,7 @@ typedef void* mi_nothrow_t;
     MI_INTERPOSE_FUN(vfree,mi_cfree),
     #endif
   };
-  #if defined(MAC_OS_X_VERSION_10_7) && (MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_7)
+  #if MI_OVERRIDE_LIBC_EXTRAS && defined(MAC_OS_X_VERSION_10_7) && (MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_7)
   MI_INTERPOSE_DECLS(_mi_interposes_10_7)  = { MI_INTERPOSE_MI(strndup) };
   #endif
   #if defined(MAC_OS_X_VERSION_10_15) && (MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_15)
@@ -215,14 +229,16 @@ typedef void* mi_nothrow_t;
   mi_decl_export void* calloc(size_t size, size_t n)    MI_FORWARD2(mi_calloc, size, n)
   mi_decl_export void* realloc(void* p, size_t newsize) MI_FORWARD2(mi_realloc, p, newsize)
   mi_decl_export void  free(void* p)                    MI_FORWARD0(mi_free, p)
-  // In principle we do not need to forward `strdup`/`strndup` but on some systems these do not use `malloc` internally (but a more primitive call)
-  // We only override if `strdup` is not a macro (as on some older libc's, see issue #885)
+#if MI_OVERRIDE_LIBC_EXTRAS
+  // Some libc's implement strdup without calling malloc. Off by default: see
+  // MI_OVERRIDE_LIBC_EXTRAS. We only override if `strdup` is not a macro (issue #885).
   #if !defined(strdup)
   mi_decl_export char* strdup(const char* str)             MI_FORWARD1(mi_strdup, str)
   #endif
   #if !defined(strndup) && (!defined(__APPLE__) || (defined(MAC_OS_X_VERSION_10_7) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_7))
   mi_decl_export char* strndup(const char* str, size_t n)  MI_FORWARD2(mi_strndup, str, n)
   #endif
+#endif
 #endif
 
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__APPLE__)
@@ -337,7 +353,9 @@ mi_decl_nodiscard size_t mi_malloc_usable_size(const void *p) mi_attr_noexcept {
 
 #ifndef MI_OSX_IS_INTERPOSED
   // Forward Posix/Unix calls as well
+#if MI_OVERRIDE_LIBC_EXTRAS
   void*  reallocf(void* p, size_t newsize) MI_FORWARD2(mi_reallocf,p,newsize)
+#endif
   size_t malloc_size(const void* p)        MI_FORWARD1(mi_malloc_size,p)
   #if !defined(__ANDROID__) && !defined(__FreeBSD__) && !defined(__DragonFly__)
   size_t malloc_usable_size(void *p)       MI_FORWARD1(mi_malloc_usable_size,p)
@@ -370,20 +388,22 @@ void* memalign(size_t alignment, size_t size)           { return mi_memalign(ali
 #if !defined(_WIN32)
 void* _aligned_malloc(size_t size, size_t alignment)    { return mi_malloc_aligned(size,alignment); }
 #endif
+#if MI_OVERRIDE_LIBC_EXTRAS
 void* reallocarray(void* p, size_t count, size_t size)  { return mi_reallocarray(p, count, size); }
 // some systems define reallocarr so mark it as a weak symbol (#751)
 mi_decl_weak int reallocarr(void* p, size_t count, size_t size)    { return mi_reallocarr(p, count, size); }
+#endif
 
 #if defined(__wasi__)
-  // forward __libc interface (see PR #667)
+  // WASI libc's malloc is these symbols (see PR #667). Always forward.
   void* __libc_malloc(size_t size)                      MI_FORWARD1(mi_malloc, size)
   void* __libc_calloc(size_t count, size_t size)        MI_FORWARD2(mi_calloc, count, size)
   void* __libc_realloc(void* p, size_t size)            MI_FORWARD2(mi_realloc, p, size)
   void  __libc_free(void* p)                            MI_FORWARD0(mi_free, p)
   void* __libc_memalign(size_t alignment, size_t size)  { return mi_memalign(alignment, size); }
 
-#elif defined(__linux__)
-  // forward __libc interface (needed for glibc-based and musl-based Linux distributions)
+#elif defined(__linux__) && MI_OVERRIDE_LIBC_EXTRAS
+  // glibc/musl internals. Off by default: Chromium PartitionAlloc.
   void* __libc_malloc(size_t size)                      MI_FORWARD1(mi_malloc,size)
   void* __libc_calloc(size_t count, size_t size)        MI_FORWARD2(mi_calloc,count,size)
   void* __libc_realloc(void* p, size_t size)            MI_FORWARD2(mi_realloc,p,size)

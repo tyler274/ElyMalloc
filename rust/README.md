@@ -125,7 +125,7 @@ cd rust
 nix build .#browsers-preload
 ```
 
-A libc control must start, spawn children, and finish the page smoke. The rewrite is compared to C mimalloc (`MI_SECURE=FULL`) on the same recipe: a rewrite-only crash is a FAIL. The rewrite should complete the smokes; C mimalloc still SIGSEGV (Electron: SIGTRAP) because it interposes `strdup`/`reallocarray` into Chromium PartitionAlloc's in-binary `realloc`. Live-host allocator-exclusion wraps stay required when the OS preloads C mimalloc.
+A libc control must start, spawn children, and finish the page smoke. The rewrite is compared to C mimalloc (`MI_SECURE=FULL`) on the same recipe: a rewrite-only crash is a FAIL. C mimalloc skips `strdup`/`reallocarray`/`__libc_*` overrides by default (`-DMI_OVERRIDE_LIBC_EXTRAS=OFF`) so PartitionAlloc is not handed foreign pointers; both allocators should complete the smokes. Live-host allocator-exclusion wraps stay required when the OS preloads an older C mimalloc that still exports those aliases.
 
 ### Live system
 

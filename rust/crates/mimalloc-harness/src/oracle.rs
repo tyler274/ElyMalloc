@@ -71,14 +71,6 @@ pub fn c_mimalloc_secure_so() -> Result<PathBuf> {
 
 fn build_c_oracle(cache: &Path, repo: &Path) -> Result<PathBuf> {
     let dest = cache.join("c-oracle");
-    for name in ["libmimalloc-secure.so", "libmimalloc.so"] {
-        if dest.join(name).is_file() {
-            return Ok(dest.join(name));
-        }
-        if let Ok(walk) = glob_so(&dest, name) {
-            return Ok(walk);
-        }
-    }
     let cmake =
         which::which("cmake").context("oracle-suites: cmake is required to build C mimalloc")?;
     println!("==> build C mimalloc oracle (MI_SECURE=FULL)");
@@ -93,6 +85,7 @@ fn build_c_oracle(cache: &Path, repo: &Path) -> Result<PathBuf> {
             "-DMI_BUILD_OBJECT=OFF",
             "-DMI_BUILD_STATIC=OFF",
             "-DMI_OVERRIDE=ON",
+            "-DMI_OVERRIDE_LIBC_EXTRAS=OFF",
             "-DCMAKE_BUILD_TYPE=Release",
         ])
         .status()?;

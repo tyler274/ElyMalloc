@@ -479,6 +479,8 @@ resolved to the _mimalloc_ library.
 > env LD_PRELOAD=/usr/lib/libmimalloc.so myprogram
 ```
 
+By default the shared library overrides the malloc family (`malloc`/`free`/`calloc`/`realloc` and aligned variants) plus C++ `new`/`delete`. It does **not** override `strdup`, `reallocarray`, or glibc `__libc_*`. Those extras mix heaps with Chromium/Electron PartitionAlloc, which keeps `realloc` inside the executable: a DSO binds `strdup` to mimalloc, then PA `realloc`s the pointer and SIGSEGVs. Restore the old aliases with `-DMI_OVERRIDE_LIBC_EXTRAS=ON`. `mi_strdup` / `mi_reallocarray` stay on the C API. Compile-time `#define` redirects in [`mimalloc-override.h`](include/mimalloc-override.h) are unchanged.
+
 You can set extra environment variables to check that mimalloc is running,
 like:
 ```
