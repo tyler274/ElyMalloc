@@ -147,7 +147,7 @@
               echo "mold still DT_NEEDED libmimalloc" >&2
               exit 1
             fi
-            nm ${moldBin}/bin/mold | grep -q ' mi_malloc'
+            readelf -s --wide ${moldBin}/bin/mold | grep -Eq '[[:space:]]mi_malloc$'
             echo 'int main(void) { return 0; }' > t.c
             gcc -fuse-ld=mold t.c -o t
             ./t
