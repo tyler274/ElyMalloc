@@ -144,12 +144,18 @@ fn run_under_alloc(
     path_prefix: Option<&Path>,
 ) -> Result<Captured> {
     fs::create_dir_all(work.join("home"))?;
-    fs::create_dir_all(work.join("tmp"))?;
     fs::create_dir_all(work.join("run"))?;
+    // Bun's glob path-length tests mkdir trees too deep for Nix `path:` inputs
+    // (ENAMETOOLONG while hashing this git tree). Keep TMPDIR off the repo.
+    let tmp = std::env::temp_dir()
+        .join("mimalloc-projects")
+        .join(work.file_name().unwrap_or_else(|| std::ffi::OsStr::new("run")));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp)?;
     let preload_file = write_preload_file(work, so)?;
     let mut env = extra_env.to_vec();
     env.push((OsString::from("HOME"), work.join("home").into_os_string()));
-    env.push((OsString::from("TMPDIR"), work.join("tmp").into_os_string()));
+    env.push((OsString::from("TMPDIR"), tmp.into_os_string()));
     env.push((
         OsString::from("XDG_RUNTIME_DIR"),
         work.join("run").into_os_string(),
