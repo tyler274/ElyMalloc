@@ -80,6 +80,7 @@
             targetCc = pkgs.pkgsMusl.stdenv.cc;
           };
           world-preload = pkgs.callPackage ./rust/world.nix { mimalloc = mimallocUnchecked; };
+          browsers-preload = pkgs.callPackage ./rust/browsers.nix { mimalloc = mimallocUnchecked; };
           live = pkgs.callPackage ./rust/live.nix { mimalloc = mimallocUnchecked; };
           vma = pkgs.callPackage ./rust/vma.nix { };
           nixos-malloc = pkgs.testers.runNixOSTest {

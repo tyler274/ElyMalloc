@@ -113,8 +113,8 @@ impl InstrCounter {
     fn reset_enable(&self) {
         #[cfg(target_os = "linux")]
         unsafe {
-            libc::ioctl(self.fd, PERF_EVENT_IOC_RESET, 0);
-            libc::ioctl(self.fd, PERF_EVENT_IOC_ENABLE, 0);
+            libc::ioctl(self.fd, PERF_EVENT_IOC_RESET as libc::Ioctl, 0);
+            libc::ioctl(self.fd, PERF_EVENT_IOC_ENABLE as libc::Ioctl, 0);
         }
     }
 
@@ -122,7 +122,7 @@ impl InstrCounter {
         #[cfg(target_os = "linux")]
         {
             unsafe {
-                libc::ioctl(self.fd, PERF_EVENT_IOC_DISABLE, 0);
+                libc::ioctl(self.fd, PERF_EVENT_IOC_DISABLE as libc::Ioctl, 0);
             }
             let mut count: u64 = 0;
             let n = unsafe {

@@ -34,6 +34,7 @@ nix build .#mold
 nix build .#checks.x86_64-linux.mold
 nix build .#vma
 nix build .#checks.x86_64-linux.vma
+nix build .#browsers-preload
 ```
 
 Compiler suites vs C mimalloc and stock jemalloc (needs `cmake`; `wasmtime` is not required):
@@ -113,7 +114,18 @@ A NixOS VM boots with the same `memoryAllocator` option (glibc reads `/etc/ld-ni
 nix build .#nixos-malloc
 ```
 
-Firefox / Chromium / Electron remain a separate smoke: they often cannot share `ld-nix.so.preload` with a system malloc (see the live host's allocator-exclusion wraps).
+Firefox / Chromium / Electron are **run** as allocator smokes (startup, child `/proc/*/maps`, short headless page). Compiler-suite `LD_PRELOAD` is not a substitute. Hide-system-malloc PATH wraps are unwrapped; injection matches NixOS (`ld-nix.so.preload` via bubblewrap).
+
+```
+cd rust
+# set ELECTRON / CHROMIUM if those binaries are not on PATH
+./tests/browsers.sh
+# or: cargo run -p mimalloc-harness -- browsers
+# optional nixpkgs browsers (large): NIX_BROWSERS=1 ./tests/browsers.sh
+nix build .#browsers-preload
+```
+
+A libc control must start, spawn children, and finish the page smoke. The rewrite is compared to C mimalloc (`MI_SECURE=FULL`) on the same recipe: a rewrite-only crash is a FAIL. The rewrite should complete the smokes; C mimalloc still SIGSEGV (Electron: SIGTRAP) because it interposes `strdup`/`reallocarray` into Chromium PartitionAlloc's in-binary `realloc`. Live-host allocator-exclusion wraps stay required when the OS preloads C mimalloc.
 
 ### Live system
 
@@ -163,7 +175,3 @@ nix build .#mimalloc   # installs $out/bin/mimalloc-bench
 ```
 
 `nix develop` provides `hyperfine` and `perf`. Set `HYPERFINE=1` to also run hyperfine on the C bench binary for each allocator.
-
-## Later
-
-- Compare **C mimalloc vs this Rust rewrite** as the process allocator for **Firefox, Chromium, and Electron** (startup, multi-process, and a short browsing/CI smoke on each).

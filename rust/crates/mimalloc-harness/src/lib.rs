@@ -4,6 +4,7 @@
 //! and WASM import checks can be unit-tested without shell.
 
 pub mod bench;
+pub mod browsers;
 pub mod cabi;
 pub mod compare;
 pub mod crash;

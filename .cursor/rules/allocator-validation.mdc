@@ -1,5 +1,5 @@
 ---
-description: Remaining drop-in allocator validation against real browsers
+description: Remaining drop-in allocator validation
 alwaysApply: true
 ---
 
@@ -7,9 +7,8 @@ alwaysApply: true
 
 When continuing the Rust mimalloc rewrite, keep this on the backlog until done:
 
-- Compare **C mimalloc vs the Rust rewrite** as the process allocator (`LD_PRELOAD` / NixOS `memoryAllocator`) for **Firefox**, **Chromium**, and **Electron**.
-- For each app, check startup, multi-process child allocators, and a short browsing or CI smoke — not only that the binary launches.
-- Do not treat compiler-suite `LD_PRELOAD` stress as a substitute for these three apps.
 - Compiler-suite **rustc** must be compared against **C mimalloc and stock jemalloc**, not only C mimalloc.
 - Those rustc (and GCC/Clang) suite cases must **run** under `LD_PRELOAD` and match the system malloc's **stdout, stderr, and exit code**. Compile/link success is not a substitute.
-- Keep musl Linux working while WASM and the browser checks land.
+- Keep musl Linux working.
+
+Firefox, Chromium, and Electron are covered by `mimalloc-harness browsers` / `rust/tests/browsers.sh` (libc control must start, spawn children, and finish a short page smoke; rewrite must not regress vs C mimalloc under NixOS `ld-nix.so.preload` injection). The rewrite should pass those smokes. C mimalloc still SIGSEGV/SIGTRAP as the process allocator (it interposes `strdup`/`reallocarray`/`__libc_*` into PartitionAlloc's `realloc`); the live host's allocator-exclusion wraps stay required when the OS preloads C mimalloc.

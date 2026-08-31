@@ -1,7 +1,7 @@
 # LD_PRELOAD smoke of typical NixOS world packages against this rewrite.
-# Not a substitute for Firefox/Chromium/Electron (those use /etc/ld-nix.so.preload
-# and are opted out on the live host). Compile/link success is not enough:
-# each binary must run.
+# Not a substitute for Firefox/Chromium/Electron: those are
+# rust/browsers.nix and `mimalloc-harness browsers`. Compile/link success
+# is not enough: each binary must run.
 {
   mimalloc,
   hello,

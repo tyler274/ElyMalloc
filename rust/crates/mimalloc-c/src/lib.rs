@@ -2124,6 +2124,12 @@ pub unsafe extern "C" fn mi_subproc_heap_stats_print_out(
 // ---------------------------------------------------------------------------
 // libc override symbols (`malloc`, `free`, `posix_memalign`, …)
 // Must be strong `T` so `LD_PRELOAD` interposes glibc/musl.
+//
+// Do not export `strdup` / `reallocarray` / `__libc_*`. Chromium's executable
+// owns `realloc` (PartitionAlloc). DSOs still bind those extra symbols to a
+// preloaded allocator, then PA `realloc`s the pointers and SIGSEGVs. Graphene
+// hardened_malloc-light stays compatible by exporting only the malloc family.
+// `mi_strdup` / `mi_reallocarray` remain on the C API.
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
@@ -2144,21 +2150,6 @@ pub unsafe extern "C" fn realloc(p: *mut c_void, newsize: usize) -> *mut c_void 
 #[no_mangle]
 pub unsafe extern "C" fn free(p: *mut c_void) {
     mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strdup(s: *const libc::c_char) -> *mut libc::c_char {
-    mi_strdup(s)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strndup(s: *const libc::c_char, n: usize) -> *mut libc::c_char {
-    mi_strndup(s, n)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn reallocf(p: *mut c_void, newsize: usize) -> *mut c_void {
-    mi_reallocf(p, newsize)
 }
 
 #[no_mangle]
@@ -2207,67 +2198,8 @@ pub unsafe extern "C" fn cfree(p: *mut c_void) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn reallocarray(p: *mut c_void, count: usize, size: usize) -> *mut c_void {
-    mi_reallocarray(p, count, size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn reallocarr(p: *mut c_void, count: usize, size: usize) -> i32 {
-    mi_reallocarr(p as *mut *mut c_void, count, size)
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn _aligned_malloc(size: usize, alignment: usize) -> *mut c_void {
     mi_malloc_aligned(size, alignment)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_malloc(size: usize) -> *mut c_void {
-    mi_malloc(size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_calloc(count: usize, size: usize) -> *mut c_void {
-    mi_calloc(count, size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_realloc(p: *mut c_void, size: usize) -> *mut c_void {
-    mi_realloc(p, size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_free(p: *mut c_void) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_cfree(p: *mut c_void) {
-    mi_free(p);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_valloc(size: usize) -> *mut c_void {
-    mi_valloc(size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_pvalloc(size: usize) -> *mut c_void {
-    mi_pvalloc(size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __libc_memalign(alignment: usize, size: usize) -> *mut c_void {
-    mi_memalign(alignment, size)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn __posix_memalign(
-    p: *mut *mut c_void,
-    alignment: usize,
-    size: usize,
-) -> i32 {
-    mi_posix_memalign(p, alignment, size)
 }
 
 // Itanium C++ new/delete (64-bit). Same strong symbols as C mimalloc's

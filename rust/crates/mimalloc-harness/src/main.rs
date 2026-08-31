@@ -31,6 +31,8 @@ enum Cmd {
     World,
     /// Vulkan Memory Allocator C ABI (virtual allocator + exported vma* symbols)
     Vma,
+    /// Firefox / Chromium / Electron vs C mimalloc (startup, child maps, page smoke)
+    Browsers,
 }
 
 fn main() {
@@ -45,6 +47,7 @@ fn main() {
         Cmd::Bench => mimalloc_harness::bench::run(),
         Cmd::World => mimalloc_harness::world::run(),
         Cmd::Vma => mimalloc_harness::vma::run(),
+        Cmd::Browsers => mimalloc_harness::browsers::run(),
     };
     if let Err(e) = r {
         eprintln!("{e:#}");

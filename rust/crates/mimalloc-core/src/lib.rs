@@ -173,6 +173,22 @@ mod tests {
     }
 
     #[test]
+    fn malloc_clears_freelist_next() {
+        unsafe {
+            let p = alloc::malloc(4);
+            assert!(!p.is_null());
+            let a = core::ptr::read_unaligned(p as *const u16);
+            if cfg!(any(debug_assertions, feature = "debug-fill")) {
+                let fill = u16::from_ne_bytes([crate::page::DEBUG_UNINIT; 2]);
+                assert_eq!(a, fill);
+            } else {
+                assert_eq!(a, 0, "C mi_page_malloc_zero zeros block->next");
+            }
+            alloc::free(p);
+        }
+    }
+
+    #[test]
     fn global_alloc_trait() {
         use core::alloc::{GlobalAlloc, Layout};
         let a = crate::Mimalloc;

@@ -31,6 +31,8 @@
 //! is guessable; the rotate+add is non-associative. Null is encoded as the
 //! page address so `(k2 <<< k1) + k1` is not a common sentinel. Decode that
 //! is not a block start in this page is treated as heap corruption (`EFAULT`).
+//! On `malloc`, C zeros `block->next` so the encoding is not leaked to the
+//! caller; [`pop_local`] does the same.
 
 use crate::arena::{self, Arena};
 use crate::mem;
@@ -548,6 +550,9 @@ pub unsafe fn collect(page: *mut Page) {
 }
 
 /// Pop one block from `local_free`. Huge pages (`capacity == 1`) return `area` once.
+///
+/// After the pop, `block.next` is cleared (C `mi_page_malloc_zero`: `block->next = 0`)
+/// so the encoded free-list pointer is not leaked to the caller.
 #[inline]
 pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
     if (*page).capacity == 1 {
@@ -559,7 +564,9 @@ pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
         }
         (*page).local_free = ptr::null_mut();
         (*page).used = 1;
-        return (*page).area;
+        let p = (*page).area;
+        clear_block_next(p);
+        return p;
     }
     let b = (*page).local_free;
     if b.is_null() {
@@ -568,12 +575,20 @@ pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
     (*page).local_free = block_next(page, b);
     (*page).used = (*page).used.saturating_add(1);
     let p = b as *mut u8;
+    clear_block_next(p);
     debug_fill(
         p,
         (*page).block_size.saturating_sub(PADDING_SIZE),
         DEBUG_UNINIT,
     );
     p
+}
+
+#[inline]
+unsafe fn clear_block_next(p: *mut u8) {
+    if !p.is_null() {
+        (*(p as *mut Block)).next = 0;
+    }
 }
 
 /// Owning-thread free: push onto `local_free` (C `mi_free_block_local`).

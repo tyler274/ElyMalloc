@@ -16,7 +16,10 @@ mod tests {
     fn encode_decode_roundtrip_fixed() {
         let keys = [
             (1usize, 2usize),
-            (0x9E37_79B9_7F4A_7C15, 0xA076_1D64_78BD_642F),
+            (
+                0x9E37_79B9_7F4A_7C15u64 as usize,
+                0xA076_1D64_78BD_642Fu64 as usize,
+            ),
             (usize::MAX, 0),
         ];
         let addrs = [0usize, 1, 8, 16, 4096, usize::MAX / 2, usize::MAX];
