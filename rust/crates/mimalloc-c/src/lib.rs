@@ -2214,13 +2214,42 @@ mod cxx_new_delete;
 #[link_section = ".init_array"]
 static INIT: extern "C" fn() = mi_ctor;
 
+#[cfg(not(target_env = "gnu"))]
 extern "C" fn process_done_atexit() {
     unsafe {
         mi_process_done();
     }
 }
 
+#[cfg(target_env = "gnu")]
+unsafe extern "C" fn process_done_cxa(_: *mut c_void) {
+    mi_process_done();
+}
+
 extern "C" fn mi_ctor() {
     mimalloc_core::init();
-    let _ = unsafe { libc::atexit(process_done_atexit) };
+    // glibc's `atexit` lives in libc_nonshared.a. A cdylib linked without the
+    // gcc driver (nixpkgs rustc/lld) leaves an unversioned `U atexit` that
+    // is not in libc.so.6, so LD_PRELOAD fails with "undefined symbol: atexit".
+    #[cfg(target_env = "gnu")]
+    {
+        unsafe extern "C" {
+            fn __cxa_atexit(
+                f: Option<unsafe extern "C" fn(*mut c_void)>,
+                arg: *mut c_void,
+                dso: *mut c_void,
+            ) -> i32;
+        }
+        let _ = unsafe {
+            __cxa_atexit(
+                Some(process_done_cxa),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+    }
+    #[cfg(not(target_env = "gnu"))]
+    {
+        let _ = unsafe { libc::atexit(process_done_atexit) };
+    }
 }

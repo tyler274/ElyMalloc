@@ -27,7 +27,7 @@ enum Cmd {
     Linkers,
     /// Wall-clock and instruction-count malloc comparison
     Bench,
-    /// Typical NixOS-world CLI packages under LD_PRELOAD
+    /// NixOS-world package tests vs C mimalloc and libc
     World,
     /// Vulkan Memory Allocator C ABI (virtual allocator + exported vma* symbols)
     Vma,

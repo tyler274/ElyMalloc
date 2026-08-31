@@ -79,7 +79,13 @@
             cargoTarget = muslTargetFor pkgs;
             targetCc = pkgs.pkgsMusl.stdenv.cc;
           };
-          world-preload = pkgs.callPackage ./rust/world.nix { mimalloc = mimallocUnchecked; };
+          world-preload = pkgs.callPackage ./rust/world.nix {
+            mimalloc = mimallocUnchecked;
+            # Vanilla nixpkgs mold DT_NEEDs C libmimalloc-secure; dual-soname
+            # preload must make linking work without LD_LIBRARY_PATH.
+            mold = nixpkgs.legacyPackages.${system}.mold;
+            nodejs = pkgs.nodejs;
+          };
           browsers-preload = pkgs.callPackage ./rust/browsers.nix { mimalloc = mimallocUnchecked; };
           live = pkgs.callPackage ./rust/live.nix { mimalloc = mimallocUnchecked; };
           vma = pkgs.callPackage ./rust/vma.nix { };
@@ -88,6 +94,7 @@
             nodes.machine =
               { pkgs, ... }:
               {
+                imports = [ self.nixosModules.memoryAllocator ];
                 nixpkgs.overlays = [
                   (final: prev: {
                     mimalloc = prev.mimalloc.overrideAttrs (_: {
@@ -95,20 +102,22 @@
                     });
                   })
                 ];
-                environment.memoryAllocator.provider = "mimalloc";
                 environment.systemPackages = [
                   pkgs.hello
                   pkgs.python3
+                  pkgs.nodejs
                   pkgs.git
                   pkgs.gcc
                 ];
               };
             testScript = ''
               machine.wait_for_unit("multi-user.target")
-              machine.succeed("grep -q libmimalloc /etc/ld-nix.so.preload")
+              machine.succeed("grep -q libmimalloc.so /etc/ld-nix.so.preload")
+              machine.succeed("grep -q libmimalloc-secure.so.3 /etc/ld-nix.so.preload")
               machine.succeed("hello")
               machine.succeed("git --version")
               machine.succeed("python3 -c 'print(sum(range(10000)))'")
+              machine.succeed("node -e 'console.log(\"node-ok\", Buffer.alloc(64).length)'")
               machine.succeed(
                   "echo 'int main(void){return 0;}' > /tmp/t.c && gcc /tmp/t.c -o /tmp/t && /tmp/t"
               )
@@ -200,10 +209,17 @@
       # On a host that already uses C mimalloc, this replaces `pkgs.mimalloc`
       # so /etc/ld-nix.so.preload points at the rewrite (always-on secure).
       nixosModules.memoryAllocator =
-        { lib, ... }:
+        { lib, pkgs, ... }:
         {
           imports = [ self.nixosModules.default ];
           environment.memoryAllocator.provider = lib.mkDefault "mimalloc";
+          # NixOS writes only libmimalloc.so. Also preload the secure SONAME so
+          # DT_NEEDED libmimalloc-secure.so.3 (nixpkgs mold) binds this rewrite
+          # instead of C mimalloc via RUNPATH.
+          environment.etc."ld-nix.so.preload".text = lib.mkForce ''
+            ${pkgs.mimalloc}/lib/libmimalloc.so
+            ${pkgs.mimalloc}/lib/libmimalloc-secure.so.3
+          '';
         };
     };
 }

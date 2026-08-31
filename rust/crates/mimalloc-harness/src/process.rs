@@ -30,8 +30,31 @@ pub fn run_captured(
     extra_env: &[(&str, OsString)],
     timeout: Duration,
 ) -> Result<Captured> {
+    let args_os: Vec<OsString> = args.iter().map(OsString::from).collect();
+    let env_os: Vec<(OsString, OsString)> = extra_env
+        .iter()
+        .map(|(k, v)| (OsString::from(*k), v.clone()))
+        .collect();
+    run_captured_os(program, &args_os, &env_os, timeout, None, &[])
+}
+
+/// Like [`run_captured`], with cwd, extra env-removes, and `OsString` argv.
+pub fn run_captured_os(
+    program: impl AsRef<OsStr>,
+    args: &[OsString],
+    extra_env: &[(OsString, OsString)],
+    timeout: Duration,
+    current_dir: Option<&Path>,
+    remove_env: &[&str],
+) -> Result<Captured> {
     let mut cmd = Command::new(program.as_ref());
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(dir) = current_dir {
+        cmd.current_dir(dir);
+    }
+    for k in remove_env {
+        cmd.env_remove(k);
+    }
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -218,6 +241,41 @@ pub fn build_mimalloc_cdylibs() -> Result<(PathBuf, PathBuf)> {
     Ok((default, dest))
 }
 
+/// glibc cdylib used as `LD_PRELOAD` / `ld-nix.so.preload` must DT_NEED
+/// `libc.so.6` and must not leave an unversioned `U atexit` (that symbol is
+/// only in `libc_nonshared.a`, so preload then fails with
+/// `undefined symbol: atexit`).
+pub fn glibc_cdylib_preload_ok(readelf_d: &str, nm_undefined: &str) -> Result<(), String> {
+    if !readelf_d.contains("Shared library: [libc.so.6]") {
+        return Err("cdylib is missing DT_NEEDED libc.so.6".into());
+    }
+    for line in nm_undefined.lines() {
+        let line = line.trim();
+        if line.contains(" U atexit") && !line.contains("@") && !line.contains("cxa_atexit") {
+            return Err("unversioned U atexit (use __cxa_atexit; atexit is libc_nonshared)".into());
+        }
+        if line.ends_with(" U atexit") {
+            return Err("unversioned U atexit (use __cxa_atexit; atexit is libc_nonshared)".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn check_glibc_cdylib_preload(so: &Path) -> Result<()> {
+    let readelf = which::which("readelf").ok();
+    let nm = which::which("nm").ok();
+    let (Some(readelf), Some(nm)) = (readelf, nm) else {
+        return Ok(());
+    };
+    let d = Command::new(readelf).arg("-d").arg(so).output()?;
+    let u = Command::new(nm).arg("-D").arg(so).output()?;
+    glibc_cdylib_preload_ok(
+        &String::from_utf8_lossy(&d.stdout),
+        &String::from_utf8_lossy(&u.stdout),
+    )
+    .map_err(|e| anyhow::anyhow!("{}: {e}", so.display()))
+}
+
 #[cfg(test)]
 mod soname_tests {
     use super::*;
@@ -253,6 +311,16 @@ mod soname_tests {
             expected_soname(Path::new("target/mimalloc-secure/release/libmimalloc.so")),
             SECURE_SONAME
         );
+    }
+
+    #[test]
+    fn nix_cdylib_without_libc_or_raw_atexit_is_rejected() {
+        let bad_d = " 0x000000000000000e (SONAME) Library soname: [libmimalloc.so.3]\n";
+        let bad_nm = "                 U atexit\n                 U malloc\n";
+        assert!(glibc_cdylib_preload_ok(bad_d, bad_nm).is_err());
+        let good_d = " 0x0000000000000001 (NEEDED) Shared library: [libc.so.6]\n";
+        let good_nm = "                 U __cxa_atexit@GLIBC_2.2.5\n";
+        assert!(glibc_cdylib_preload_ok(good_d, good_nm).is_ok());
     }
 }
 

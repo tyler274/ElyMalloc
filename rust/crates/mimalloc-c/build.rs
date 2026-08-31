@@ -12,8 +12,12 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-soname,{soname}");
     }
     // musl folds pthread and dl into libc; glibc still needs the extra libs.
+    // Force `-lc` as a DT_NEEDED: rustc cdylib allows undefined symbols, so
+    // `-lc --as-needed` is dropped and glibc-only stubs (`atexit`) stay U.
     if env != "musl" {
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=dl");
+        println!("cargo:rustc-cdylib-link-arg=-Wl,--no-as-needed");
+        println!("cargo:rustc-cdylib-link-arg=-lc");
     }
 }

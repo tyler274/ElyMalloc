@@ -98,12 +98,12 @@ The flake overlay replaces `pkgs.mimalloc` with this library. Mitigations are al
 
 ### World packages (build + run)
 
-A representative slice of NixOS CLI packages is built from nixpkgs and **run** under `LD_PRELOAD` of the rewrite (hello, coreutils, git, curl, python3, perl, gcc/g++, …). Compile/link success is not enough.
+Packages from this machine (`NIXOS_CONFIG`, default `/etc/nixos`) are **run** as real workloads under the rewrite, C mimalloc, and libc — git, openssl, python3 (stdlib slice or store python), Node.js, gcc/g++/rustc/mold, KWin `--virtual --exit-with-session`, plasmashell, kreadconfig6, compression, e2fsprogs, … — not `--version`. PASS means stdout, stderr, and exit match libc. Rewrite-only mismatches are FAIL. Injection matches NixOS (`ld-nix.so.preload` via bubblewrap) and lists both `libmimalloc.so` and `libmimalloc-secure.so.3` so nixpkgs mold's `DT_NEEDED` binds the rewrite instead of C mimalloc. The flake check is the sandboxed subset (including python3, node, and mold).
 
 ```
 nix build .#world-preload
 nix build .#checks.x86_64-linux.world-preload
-# PATH programs on this machine:
+# PATH programs from this NixOS config:
 cd rust && cargo run -p mimalloc-harness -- world
 ./tests/nixos-world.sh
 ```

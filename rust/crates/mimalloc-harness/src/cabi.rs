@@ -84,6 +84,7 @@ pub fn run() -> Result<()> {
             }
         }
     }
+    crate::process::check_glibc_cdylib_preload(&so)?;
     if let Ok(nm) = which::which("nm") {
         let outp = Command::new(nm)
             .args(["-D", "--defined-only"])

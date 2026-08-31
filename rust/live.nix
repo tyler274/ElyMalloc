@@ -13,12 +13,14 @@
 
 let
   so = "${mimalloc}/lib/libmimalloc.so";
+  secure = "${mimalloc}/lib/libmimalloc-secure.so.3";
   empty = writeText "empty-ld-nix.so.preload" "";
 in
 writeShellScriptBin "mimalloc-live" ''
   #!${runtimeShell}
   set -euo pipefail
   so=${so}
+  secure=${secure}
   empty=${empty}
   bwrap=${bubblewrap}/bin/bwrap
 
@@ -27,7 +29,11 @@ writeShellScriptBin "mimalloc-live" ''
     exit 1
   fi
 
-  export LD_PRELOAD="$so''${LD_PRELOAD:+:$LD_PRELOAD}"
+  preload=$so
+  if [ -f "$secure" ]; then
+    preload="$so:$secure"
+  fi
+  export LD_PRELOAD="$preload''${LD_PRELOAD:+:$LD_PRELOAD}"
 
   if [ "$#" -eq 0 ]; then
     echo "mimalloc-live: LD_PRELOAD=$LD_PRELOAD" >&2

@@ -206,7 +206,7 @@ pub fn parse_embedded_bwrap(script: &str) -> Option<String> {
     None
 }
 
-fn find_bwrap() -> Option<PathBuf> {
+pub(crate) fn find_bwrap() -> Option<PathBuf> {
     if let Some(p) = env_path("BWRAP").or_else(|| crate::which("bwrap")) {
         return Some(p);
     }
@@ -283,7 +283,7 @@ fn timeout_secs() -> u64 {
         .unwrap_or(90)
 }
 
-fn preload_bind_dests() -> Vec<PathBuf> {
+pub(crate) fn preload_bind_dests() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let candidates = [
         PathBuf::from("/etc/ld-nix.so.preload"),
