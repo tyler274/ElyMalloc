@@ -45,15 +45,16 @@ CMAKE
         echo "error: mold DT_NEEDED libmimalloc; expected a static archive" >&2
         exit 1
       fi
-      # PIE is ET_DYN; `nm` (and `nm -D`) may only print .dynsym, where rustc
-      # hidden-visibility C symbols do not appear. `.symtab` via readelf is
-      # the reliable table after `strip -S`.
-      if ! readelf -s --wide "$out/bin/mold" | grep -Eq '[[:space:]]mi_malloc$'; then
+      # Don't pipe `readelf` into `grep -q`: grep exits on the first match,
+      # readelf gets SIGPIPE, and with `pipefail` the pipeline is 141 — which
+      # `if !` treats as failure even when `mi_malloc` is present.
+      readelf -s --wide "$out/bin/mold" > "$TMPDIR/mold.syms"
+      if ! grep -F -w -- mi_malloc "$TMPDIR/mold.syms" >/dev/null; then
         echo "error: mi_malloc not found in mold (static mimalloc missing)" >&2
-        readelf -s --wide "$out/bin/mold" | grep -E 'malloc|_Znwm' | head -50 >&2
+        grep -F -e mi_malloc -e _Znwm -e ' malloc' "$TMPDIR/mold.syms" >&2 || true
         exit 1
       fi
-      if ! readelf -s --wide "$out/bin/mold" | grep -Eq '[[:space:]]_Znwm$'; then
+      if ! grep -F -w -- _Znwm "$TMPDIR/mold.syms" >/dev/null; then
         echo "error: operator new not found in mold (C++ ABI stripped)" >&2
         exit 1
       fi
