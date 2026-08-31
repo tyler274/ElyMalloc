@@ -16,7 +16,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "VulkanMemoryAllocator";
-  version = "3.3.0";
+  version = "3.4.0";
 
   src = ./.;
 
@@ -103,8 +103,8 @@ libdir=''${prefix}/lib
 includedir=''${prefix}/include
 
 Name: VulkanMemoryAllocator
-Description: Pure-Rust Vulkan Memory Allocator (AMD VMA 3.3 ABI)
-Version: 3.3.0
+Description: Pure-Rust Vulkan Memory Allocator (AMD VMA 3.4 ABI)
+Version: 3.4.0
 Libs: -L''${libdir} -lVulkanMemoryAllocator
 Cflags: -I''${includedir}
 EOF
@@ -112,7 +112,7 @@ EOF
   '';
 
   meta = with lib; {
-    description = "Pure-Rust Vulkan Memory Allocator with AMD VMA 3.3 C ABI";
+    description = "Pure-Rust Vulkan Memory Allocator with AMD VMA 3.4 C ABI";
     homepage = "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator";
     license = licenses.mit;
     platforms = platforms.linux;

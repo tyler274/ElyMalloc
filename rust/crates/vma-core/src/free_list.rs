@@ -76,7 +76,9 @@ impl FreeList {
             let pick = if min_offset { aligned } else { waste };
             match best {
                 None => best = Some((pick, off, aligned)),
-                Some((w, _, _)) if min_offset && aligned < w => best = Some((aligned, off, aligned)),
+                Some((w, _, _)) if min_offset && aligned < w => {
+                    best = Some((aligned, off, aligned))
+                }
                 Some((w, _, _)) if best_fit && pick < w => best = Some((waste, off, aligned)),
                 _ => {}
             }
@@ -131,7 +133,11 @@ impl FreeList {
         }
         let mut start = offset;
         let mut len = size;
-        let prev = self.by_offset.range(..offset).next_back().map(|(&o, &l)| (o, l));
+        let prev = self
+            .by_offset
+            .range(..offset)
+            .next_back()
+            .map(|(&o, &l)| (o, l));
         if let Some((poff, plen)) = prev {
             if poff + plen == offset {
                 self.by_offset.remove(&poff);
@@ -139,7 +145,11 @@ impl FreeList {
                 len += plen;
             }
         }
-        let next = self.by_offset.range(offset + 1..).next().map(|(&o, &l)| (o, l));
+        let next = self
+            .by_offset
+            .range(offset + 1..)
+            .next()
+            .map(|(&o, &l)| (o, l));
         if let Some((noff, nlen)) = next {
             if start + len == noff {
                 self.by_offset.remove(&noff);

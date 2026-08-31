@@ -69,7 +69,11 @@ static ALLOC: Mimalloc = Mimalloc;
 
 ## Vulkan Memory Allocator
 
-Pure-Rust GPU heap manager with AMD [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) 3.3 C ABI (`vma*` / `Vma*` as in `vk_mem_alloc.h`). Include AMD's header without `VMA_IMPLEMENTATION` (or `crates/vma-c/include/vk_mem_alloc.h`) and link `libVulkanMemoryAllocator.so.3`. Vulkan is called only through `VmaVulkanFunctions` or `libvulkan.so.1`. The virtual allocator needs no GPU.
+Pure-Rust GPU heap manager with AMD [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) **3.4** C ABI (`vma*` / `Vma*` as in `vk_mem_alloc.h` v3.4.0). Include AMD's header without `VMA_IMPLEMENTATION` (or `crates/vma-c/include/vk_mem_alloc.h`) and link `libVulkanMemoryAllocator.so.3`. Vulkan is called only through `VmaVulkanFunctions` or `libvulkan.so.1`. The virtual allocator needs no GPU.
+
+3.4 ABI extras vs 3.3: `VmaAllocationCreateInfo::minAlignment` (power of two, or 0); `VmaVulkanFunctions::vkGetPhysicalDeviceProperties2KHR`; `vmaAllocateDedicatedMemory` / `vmaCreateDedicatedBuffer` / `vmaCreateDedicatedImage` (optional `pMemoryAllocateNext` on `VkMemoryAllocateInfo`); `vmaGetMemoryWin32Handle2` (Linux stub returns `VK_ERROR_FEATURE_NOT_PRESENT`). `vmaCreateBufferWithAlignment` remains but is obsolete — it folds into `minAlignment`. `VMA_VERSION` is `VK_MAKE_VERSION(3, 4, 0)`. SONAME stays `.so.3`.
+
+Tests: `vma-core` unit tests use in-process fake Vulkan, including a Blender GHOST / OpenXR-style workload (Vulkan 1.2, buffer device address, mapped sequential-write vertex/index/uniform buffers, GPU-only images, pools, stats/budgets/defrag, dedicated + `minAlignment`). The harness also compiles C smokes (`vma-virtual.c`, `vma-abi-34.c`, `vma-blender.c`) against the cdylib.
 
 ```
 cd rust
@@ -134,6 +138,8 @@ A libc control must start, spawn children, and finish the page smoke. The rewrit
 ```
 cd rust
 # nixpkgs bun is used if `bun` is not on PATH
+# bun writes scratch under `/tmp/mimalloc-projects` (not `rust/target`) so a
+# dirty Nix `path:` flake does not NAR-hash FIFOs / long paths
 ./tests/projects.sh
 # or: cargo run -p mimalloc-harness -- projects
 # PROJECTS=bun|serde|all  BUN_FULL=1  BUN_TEST='test/js/web/encoding'  BUN_SRC=  SERDE_SRC=

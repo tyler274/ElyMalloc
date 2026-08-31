@@ -1,9 +1,9 @@
 [package]
 name = "vma-c"
-version = "3.3.0"
+version = "3.4.0"
 edition.workspace = true
 license.workspace = true
-description = "C ABI drop-in for AMD Vulkan Memory Allocator (vma* / Vma*)"
+description = "C ABI drop-in for AMD Vulkan Memory Allocator 3.4 (vma* / Vma*)"
 
 [dependencies]
 vma-core = { path = "../vma-core" }

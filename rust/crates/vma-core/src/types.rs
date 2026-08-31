@@ -1,7 +1,19 @@
-//! `Vma*` types matching AMD `vk_mem_alloc.h` 3.3 (Vulkan 1.1+ function table).
+//! `Vma*` types matching AMD `vk_mem_alloc.h` **3.4** (Vulkan 1.1+ function table).
+//!
+//! Struct field order is ABI. New 3.4 members are appended:
+//! [`VmaAllocationCreateInfo::min_alignment`] and
+//! [`VmaVulkanFunctions::vk_get_physical_device_properties2_khr`].
 
 use crate::vk::*;
 use core::ffi::{c_char, c_void};
+
+/// `VK_MAKE_VERSION(major, minor, patch)` as used by VMA and Vulkan.
+pub const fn vma_make_version(major: u32, minor: u32, patch: u32) -> u32 {
+    (major << 22) | (minor << 12) | patch
+}
+
+/// AMD VMA 3.4.0 (`VK_MAKE_VERSION(3, 4, 0)`).
+pub const VMA_VERSION: u32 = vma_make_version(3, 4, 0);
 
 pub type VmaAllocator = *mut crate::device::Allocator;
 pub type VmaPool = *mut crate::device::Pool;
@@ -57,12 +69,10 @@ pub const VMA_DEFRAGMENTATION_MOVE_OPERATION_COPY: i32 = 0;
 pub const VMA_DEFRAGMENTATION_MOVE_OPERATION_IGNORE: i32 = 1;
 pub const VMA_DEFRAGMENTATION_MOVE_OPERATION_DESTROY: i32 = 2;
 
-pub type PFN_vmaAllocateDeviceMemoryFunction = Option<
-    unsafe extern "system" fn(VmaAllocator, u32, VkDeviceMemory, VkDeviceSize, *mut c_void),
->;
-pub type PFN_vmaFreeDeviceMemoryFunction = Option<
-    unsafe extern "system" fn(VmaAllocator, u32, VkDeviceMemory, VkDeviceSize, *mut c_void),
->;
+pub type PFN_vmaAllocateDeviceMemoryFunction =
+    Option<unsafe extern "system" fn(VmaAllocator, u32, VkDeviceMemory, VkDeviceSize, *mut c_void)>;
+pub type PFN_vmaFreeDeviceMemoryFunction =
+    Option<unsafe extern "system" fn(VmaAllocator, u32, VkDeviceMemory, VkDeviceSize, *mut c_void)>;
 pub type PFN_vmaCheckDefragmentationBreakFunction =
     Option<unsafe extern "system" fn(*mut c_void) -> VkBool32>;
 
@@ -74,7 +84,12 @@ pub struct VmaDeviceMemoryCallbacks {
     pub p_user_data: *mut c_void,
 }
 
-/// Layout matches VMA compiled with Vulkan ≥ 1.1 (dedicated, bind2, budget) and 1.3 maintenance4.
+/// Dispatch table matching VMA built with Vulkan ≥ 1.1 (dedicated, bind2,
+/// budget) and 1.3 maintenance4.
+///
+/// The last field is 3.4's `vkGetPhysicalDeviceProperties2KHR`. On Linux the
+/// Win32 handle slot is an unused pointer (AMD uses `void *` when
+/// `VMA_EXTERNAL_MEMORY_WIN32` is off).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VmaVulkanFunctions {
@@ -105,6 +120,9 @@ pub struct VmaVulkanFunctions {
     pub vk_get_device_buffer_memory_requirements: PFN_vkGetDeviceBufferMemoryRequirements,
     pub vk_get_device_image_memory_requirements: PFN_vkGetDeviceImageMemoryRequirements,
     pub vk_get_memory_win32_handle_khr: *mut c_void,
+    /// 3.4: `vkGetPhysicalDeviceProperties2` / `…KHR`. Optional; v1 properties
+    /// remain required.
+    pub vk_get_physical_device_properties2_khr: PFN_vkGetPhysicalDeviceProperties2,
 }
 
 impl Default for VmaVulkanFunctions {
@@ -113,6 +131,10 @@ impl Default for VmaVulkanFunctions {
     }
 }
 
+/// Description of an allocator to create (`vmaCreateAllocator`).
+///
+/// `vulkan_api_version` should match the device (Blender GHOST uses 1.2).
+/// `p_vulkan_functions` may be null if `libvulkan.so.1` can be `dlopen`ed.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VmaAllocatorCreateInfo {
@@ -186,6 +208,11 @@ pub struct VmaBudget {
     pub budget: VkDeviceSize,
 }
 
+/// Parameters for a single allocation (`vmaAllocateMemory`, `vmaCreateBuffer`, …).
+///
+/// [`Self::min_alignment`] is VMA 3.4. Zero means no extra alignment; a
+/// non-zero value must be a power of two. `vmaCreateBufferWithAlignment` is
+/// kept for ABI but folds into this field (`max` of both).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VmaAllocationCreateInfo {
@@ -197,6 +224,8 @@ pub struct VmaAllocationCreateInfo {
     pub pool: VmaPool,
     pub p_user_data: *mut c_void,
     pub priority: f32,
+    /// Extra minimum alignment in bytes. `0` = none; otherwise a power of two.
+    pub min_alignment: VkDeviceSize,
 }
 
 impl Default for VmaAllocationCreateInfo {

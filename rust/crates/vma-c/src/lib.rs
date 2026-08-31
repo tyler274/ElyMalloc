@@ -1,8 +1,16 @@
-//! C ABI for AMD Vulkan Memory Allocator 3.3 (`vma*` / `Vma*`).
+//! C ABI for AMD Vulkan Memory Allocator **3.4** (`vma*` / `Vma*`).
 //!
 //! Link this `cdylib` / `staticlib` instead of compiling `vk_mem_alloc.h` with
 //! `VMA_IMPLEMENTATION`. Include AMD's header (or `include/vk_mem_alloc.h` here)
-//! without defining `VMA_IMPLEMENTATION`.
+//! without defining `VMA_IMPLEMENTATION`. SONAME is `libVulkanMemoryAllocator.so.3`.
+//!
+//! # Safety
+//!
+//! Every `vma*` export is `unsafe` C ABI. Pointers must match AMD VMA:
+//! non-null where the header uses `VMA_NOT_NULL`, allocator/pool/allocation
+//! handles from the corresponding create call, and Vulkan objects that remain
+//! valid for the duration of the call. Null allocator/allocation is a no-op
+//! on destroy/free, as in upstream.
 
 #![allow(non_snake_case)]
 #![allow(clippy::missing_safety_doc)]
@@ -163,7 +171,10 @@ pub unsafe extern "C" fn vmaCalculatePoolStatistics(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vmaCheckPoolCorruption(allocator: VmaAllocator, pool: VmaPool) -> VkResult {
+pub unsafe extern "C" fn vmaCheckPoolCorruption(
+    allocator: VmaAllocator,
+    pool: VmaPool,
+) -> VkResult {
     device::check_pool_corruption(allocator, pool)
 }
 
@@ -197,6 +208,26 @@ pub unsafe extern "C" fn vmaAllocateMemory(
         allocator,
         p_vk_memory_requirements,
         p_create_info,
+        p_allocation,
+        p_allocation_info,
+    )
+}
+
+/// 3.4: dedicated allocation with an extra `VkMemoryAllocateInfo::pNext` chain.
+#[no_mangle]
+pub unsafe extern "C" fn vmaAllocateDedicatedMemory(
+    allocator: VmaAllocator,
+    p_vk_memory_requirements: *const VkMemoryRequirements,
+    p_create_info: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
+    p_allocation: *mut VmaAllocation,
+    p_allocation_info: *mut VmaAllocationInfo,
+) -> VkResult {
+    device::allocate_dedicated_memory(
+        allocator,
+        p_vk_memory_requirements,
+        p_create_info,
+        p_memory_allocate_next,
         p_allocation,
         p_allocation_info,
     )
@@ -322,6 +353,25 @@ pub unsafe extern "C" fn vmaGetMemoryWin32Handle(
     p_handle: *mut *mut c_void,
 ) -> VkResult {
     device::get_memory_win32_handle(allocator, allocation, h_target_process, p_handle)
+}
+
+/// 3.4: Win32 `vkGetMemoryWin32HandleKHR` helper. On Linux this always returns
+/// `VK_ERROR_FEATURE_NOT_PRESENT`.
+#[no_mangle]
+pub unsafe extern "C" fn vmaGetMemoryWin32Handle2(
+    allocator: VmaAllocator,
+    allocation: VmaAllocation,
+    handle_type: u32,
+    h_target_process: *mut c_void,
+    p_handle: *mut *mut c_void,
+) -> VkResult {
+    device::get_memory_win32_handle2(
+        allocator,
+        allocation,
+        handle_type,
+        h_target_process,
+        p_handle,
+    )
 }
 
 #[no_mangle]
@@ -475,7 +525,13 @@ pub unsafe extern "C" fn vmaBindBufferMemory2(
     buffer: VkBuffer,
     p_next: *const c_void,
 ) -> VkResult {
-    device::bind_buffer2(allocator, allocation, allocation_local_offset, buffer, p_next)
+    device::bind_buffer2(
+        allocator,
+        allocation,
+        allocation_local_offset,
+        buffer,
+        p_next,
+    )
 }
 
 #[no_mangle]
@@ -495,7 +551,13 @@ pub unsafe extern "C" fn vmaBindImageMemory2(
     image: VkImage,
     p_next: *const c_void,
 ) -> VkResult {
-    device::bind_image2(allocator, allocation, allocation_local_offset, image, p_next)
+    device::bind_image2(
+        allocator,
+        allocation,
+        allocation_local_offset,
+        image,
+        p_next,
+    )
 }
 
 #[no_mangle]
@@ -512,12 +574,15 @@ pub unsafe extern "C" fn vmaCreateBuffer(
         p_buffer_create_info,
         p_allocation_create_info,
         1,
+        core::ptr::null_mut(),
         p_buffer,
         p_allocation,
         p_allocation_info,
     )
 }
 
+/// Obsolete in 3.4: prefer `VmaAllocationCreateInfo::min_alignment`.
+/// This still takes the max of `min_alignment` and the create-info field.
 #[no_mangle]
 pub unsafe extern "C" fn vmaCreateBufferWithAlignment(
     allocator: VmaAllocator,
@@ -533,6 +598,29 @@ pub unsafe extern "C" fn vmaCreateBufferWithAlignment(
         p_buffer_create_info,
         p_allocation_create_info,
         min_alignment,
+        core::ptr::null_mut(),
+        p_buffer,
+        p_allocation,
+        p_allocation_info,
+    )
+}
+
+/// 3.4: dedicated buffer; implies `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT`.
+#[no_mangle]
+pub unsafe extern "C" fn vmaCreateDedicatedBuffer(
+    allocator: VmaAllocator,
+    p_buffer_create_info: *const VkBufferCreateInfo,
+    p_allocation_create_info: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
+    p_buffer: *mut VkBuffer,
+    p_allocation: *mut VmaAllocation,
+    p_allocation_info: *mut VmaAllocationInfo,
+) -> VkResult {
+    device::create_dedicated_buffer(
+        allocator,
+        p_buffer_create_info,
+        p_allocation_create_info,
+        p_memory_allocate_next,
         p_buffer,
         p_allocation,
         p_allocation_info,
@@ -588,6 +676,29 @@ pub unsafe extern "C" fn vmaCreateImage(
         allocator,
         p_image_create_info,
         p_allocation_create_info,
+        core::ptr::null_mut(),
+        p_image,
+        p_allocation,
+        p_allocation_info,
+    )
+}
+
+/// 3.4: dedicated image; implies `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT`.
+#[no_mangle]
+pub unsafe extern "C" fn vmaCreateDedicatedImage(
+    allocator: VmaAllocator,
+    p_image_create_info: *const VkImageCreateInfo,
+    p_allocation_create_info: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
+    p_image: *mut VkImage,
+    p_allocation: *mut VmaAllocation,
+    p_allocation_info: *mut VmaAllocationInfo,
+) -> VkResult {
+    device::create_dedicated_image(
+        allocator,
+        p_image_create_info,
+        p_allocation_create_info,
+        p_memory_allocate_next,
         p_image,
         p_allocation,
         p_allocation_info,

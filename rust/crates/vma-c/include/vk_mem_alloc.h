@@ -2,8 +2,8 @@
 #define AMD_VULKAN_MEMORY_ALLOCATOR_H
 
 /*
- * Declarations-only header matching AMD Vulkan Memory Allocator 3.3
- * (`vk_mem_alloc.h`) for linking the Rust `libVulkanMemoryAllocator`.
+ * Declarations-only header matching AMD Vulkan Memory Allocator 3.4
+ * (`vk_mem_alloc.h` v3.4.0) for linking the Rust `libVulkanMemoryAllocator`.
  * Do not define VMA_IMPLEMENTATION. Apps may include AMD's header instead.
  */
 
@@ -47,6 +47,11 @@ typedef uint64_t VkImage;
 #define VK_MAX_MEMORY_HEAPS 16
 #define VK_MAX_PHYSICAL_DEVICE_NAME_SIZE 256
 #define VK_UUID_SIZE 16
+#ifndef VK_MAKE_VERSION
+#define VK_MAKE_VERSION(major, minor, patch) \
+    ((((uint32_t)(major)) << 22) | (((uint32_t)(minor)) << 12) | ((uint32_t)(patch)))
+#endif
+#define VMA_VERSION (VK_MAKE_VERSION(3, 4, 0))
 
 typedef struct VkExtent3D {
     uint32_t width, height, depth;
@@ -283,6 +288,7 @@ typedef struct VmaVulkanFunctions {
     void *vkGetDeviceBufferMemoryRequirements;
     void *vkGetDeviceImageMemoryRequirements;
     void *vkGetMemoryWin32HandleKHR;
+    void *vkGetPhysicalDeviceProperties2KHR;
 } VmaVulkanFunctions;
 
 typedef struct VmaAllocatorCreateInfo {
@@ -335,6 +341,7 @@ typedef struct VmaAllocationCreateInfo {
     VmaPool pool;
     void *pUserData;
     float priority;
+    VkDeviceSize minAlignment;
 } VmaAllocationCreateInfo;
 
 typedef struct VmaPoolCreateInfo {
@@ -441,6 +448,10 @@ VMA_CALL_PRE void VMA_CALL_POST vmaSetPoolName(VmaAllocator allocator, VmaPool p
 VMA_CALL_PRE VkResult VMA_CALL_POST vmaAllocateMemory(
     VmaAllocator allocator, const VkMemoryRequirements *pVkMemoryRequirements,
     const VmaAllocationCreateInfo *pCreateInfo, VmaAllocation *pAllocation, VmaAllocationInfo *pAllocationInfo);
+VMA_CALL_PRE VkResult VMA_CALL_POST vmaAllocateDedicatedMemory(
+    VmaAllocator allocator, const VkMemoryRequirements *pVkMemoryRequirements,
+    const VmaAllocationCreateInfo *pCreateInfo, void *pMemoryAllocateNext, VmaAllocation *pAllocation,
+    VmaAllocationInfo *pAllocationInfo);
 VMA_CALL_PRE VkResult VMA_CALL_POST vmaAllocateMemoryPages(
     VmaAllocator allocator, const VkMemoryRequirements *pVkMemoryRequirements,
     const VmaAllocationCreateInfo *pCreateInfo, size_t allocationCount, VmaAllocation *pAllocations,
@@ -466,6 +477,8 @@ VMA_CALL_PRE void VMA_CALL_POST vmaGetAllocationMemoryProperties(
     VmaAllocator allocator, VmaAllocation allocation, VkMemoryPropertyFlags *pFlags);
 VMA_CALL_PRE VkResult VMA_CALL_POST vmaGetMemoryWin32Handle(
     VmaAllocator allocator, VmaAllocation allocation, void *hTargetProcess, void **pHandle);
+VMA_CALL_PRE VkResult VMA_CALL_POST vmaGetMemoryWin32Handle2(
+    VmaAllocator allocator, VmaAllocation allocation, uint32_t handleType, void *hTargetProcess, void **pHandle);
 VMA_CALL_PRE VkResult VMA_CALL_POST vmaMapMemory(
     VmaAllocator allocator, VmaAllocation allocation, void **ppData);
 VMA_CALL_PRE void VMA_CALL_POST vmaUnmapMemory(VmaAllocator allocator, VmaAllocation allocation);
@@ -512,6 +525,10 @@ VMA_CALL_PRE VkResult VMA_CALL_POST vmaCreateBufferWithAlignment(
     VmaAllocator allocator, const VkBufferCreateInfo *pBufferCreateInfo,
     const VmaAllocationCreateInfo *pAllocationCreateInfo, VkDeviceSize minAlignment, VkBuffer *pBuffer,
     VmaAllocation *pAllocation, VmaAllocationInfo *pAllocationInfo);
+VMA_CALL_PRE VkResult VMA_CALL_POST vmaCreateDedicatedBuffer(
+    VmaAllocator allocator, const VkBufferCreateInfo *pBufferCreateInfo,
+    const VmaAllocationCreateInfo *pAllocationCreateInfo, void *pMemoryAllocateNext, VkBuffer *pBuffer,
+    VmaAllocation *pAllocation, VmaAllocationInfo *pAllocationInfo);
 VMA_CALL_PRE VkResult VMA_CALL_POST vmaCreateAliasingBuffer(
     VmaAllocator allocator, VmaAllocation allocation, const VkBufferCreateInfo *pBufferCreateInfo,
     VkBuffer *pBuffer);
@@ -524,6 +541,10 @@ VMA_CALL_PRE VkResult VMA_CALL_POST vmaCreateImage(
     VmaAllocator allocator, const VkImageCreateInfo *pImageCreateInfo,
     const VmaAllocationCreateInfo *pAllocationCreateInfo, VkImage *pImage, VmaAllocation *pAllocation,
     VmaAllocationInfo *pAllocationInfo);
+VMA_CALL_PRE VkResult VMA_CALL_POST vmaCreateDedicatedImage(
+    VmaAllocator allocator, const VkImageCreateInfo *pImageCreateInfo,
+    const VmaAllocationCreateInfo *pAllocationCreateInfo, void *pMemoryAllocateNext, VkImage *pImage,
+    VmaAllocation *pAllocation, VmaAllocationInfo *pAllocationInfo);
 VMA_CALL_PRE VkResult VMA_CALL_POST vmaCreateAliasingImage(
     VmaAllocator allocator, VmaAllocation allocation, const VkImageCreateInfo *pImageCreateInfo,
     VkImage *pImage);

@@ -1,9 +1,9 @@
 [package]
 name = "vma-core"
-version = "3.3.0"
+version = "3.4.0"
 edition.workspace = true
 license.workspace = true
-description = "Rust Vulkan Memory Allocator matching AMD VMA 3.3 C ABI"
+description = "Rust Vulkan Memory Allocator matching AMD VMA 3.4 C ABI"
 
 [lib]
 name = "vma_core"

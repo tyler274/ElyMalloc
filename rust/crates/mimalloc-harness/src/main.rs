@@ -31,7 +31,7 @@ enum Cmd {
     World,
     /// Bun (oven-sh/bun) and Serde test suites vs C mimalloc and libc
     Projects,
-    /// Vulkan Memory Allocator C ABI (virtual allocator + exported vma* symbols)
+    /// Vulkan Memory Allocator C ABI (virtual allocator, 3.4 symbols, Blender-style smoke)
     Vma,
     /// Firefox / Chromium / Electron vs C mimalloc (startup, child maps, page smoke)
     Browsers,

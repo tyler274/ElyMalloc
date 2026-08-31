@@ -25,7 +25,10 @@ impl VirtualBlock {
         Self {
             size,
             flags,
-            free: FreeList::new(size, flags & VMA_VIRTUAL_BLOCK_CREATE_LINEAR_ALGORITHM_BIT != 0),
+            free: FreeList::new(
+                size,
+                flags & VMA_VIRTUAL_BLOCK_CREATE_LINEAR_ALGORITHM_BIT != 0,
+            ),
             allocs: HashMap::new(),
             next_id: 1,
         }

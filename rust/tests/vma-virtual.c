@@ -1,4 +1,4 @@
-/* GPU-free virtual allocator smoke against the Rust VMA cdylib. */
+/* GPU-free virtual allocator smoke against the Rust VMA 3.4 cdylib. */
 #include "vk_mem_alloc.h"
 #include <stdint.h>
 #include <stdio.h>

@@ -1,6 +1,13 @@
 //! Device-memory allocator: default pools, custom pools, dedicated blocks,
 //! buffer/image helpers. One `VkDeviceMemory` is a *block*; `VmaAllocation`
 //! is a subregion (C `types.h` terminology).
+//!
+//! Alignment is the max of Vulkan `VkMemoryRequirements::alignment`,
+//! [`VmaAllocationCreateInfo::min_alignment`] (3.4), an optional extra from
+//! the obsolete `vmaCreateBufferWithAlignment`, and a pool's
+//! `minAllocationAlignment`. Dedicated helpers imply
+//! `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT` and attach
+//! `pMemoryAllocateNext` to `VkMemoryAllocateInfo`.
 
 use crate::free_list::{align_up, FreeList};
 use crate::types::*;
@@ -84,7 +91,9 @@ unsafe fn lock_if(allocator: *mut Allocator) -> Option<std::sync::MutexGuard<'st
 }
 
 fn block_size_for(a: &Allocator, heap: u32) -> u64 {
-    let hs = a.mem.memory_heaps[heap as usize].size.min(a.heap_limit[heap as usize]);
+    let hs = a.mem.memory_heaps[heap as usize]
+        .size
+        .min(a.heap_limit[heap as usize]);
     if hs > LARGE_HEAP {
         a.block_size
     } else {
@@ -198,7 +207,13 @@ pub unsafe fn destroy(allocator: VmaAllocator) {
 
 unsafe fn free_vk_memory(a: &Allocator, ty: u32, memory: VkDeviceMemory, size: u64) {
     if let Some(cb) = a.callbacks.pfn_free {
-        cb(a as *const _ as VmaAllocator, ty, memory, size, a.callbacks.p_user_data);
+        cb(
+            a as *const _ as VmaAllocator,
+            ty,
+            memory,
+            size,
+            a.callbacks.p_user_data,
+        );
     }
     if let Some(f) = a.funcs.vk_free_memory {
         f(a.device, memory, core::ptr::null());
@@ -211,6 +226,7 @@ unsafe fn alloc_vk_memory(
     size: u64,
     dedicated_buffer: VkBuffer,
     dedicated_image: VkImage,
+    p_memory_allocate_next: *mut c_void,
 ) -> Result<VkDeviceMemory, VkResult> {
     let mut flags_info = VkMemoryAllocateFlagsInfo {
         s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
@@ -226,7 +242,7 @@ unsafe fn alloc_vk_memory(
     };
     let mut info = VkMemoryAllocateInfo {
         s_type: VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        p_next: core::ptr::null(),
+        p_next: p_memory_allocate_next as *const c_void,
         allocation_size: size,
         memory_type_index: ty,
     };
@@ -247,7 +263,13 @@ unsafe fn alloc_vk_memory(
         return Err(r);
     }
     if let Some(cb) = a.callbacks.pfn_allocate {
-        cb(a as *const _ as VmaAllocator, ty, mem, size, a.callbacks.p_user_data);
+        cb(
+            a as *const _ as VmaAllocator,
+            ty,
+            mem,
+            size,
+            a.callbacks.p_user_data,
+        );
     }
     Ok(mem)
 }
@@ -286,7 +308,9 @@ pub fn find_memory_type(
         VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED => {
             required |= VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
         }
-        VMA_MEMORY_USAGE_AUTO | VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE | VMA_MEMORY_USAGE_AUTO_PREFER_HOST => {
+        VMA_MEMORY_USAGE_AUTO
+        | VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
+        | VMA_MEMORY_USAGE_AUTO_PREFER_HOST => {
             let host = create.flags
                 & (VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
                     | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT)
@@ -323,7 +347,8 @@ pub fn find_memory_type(
         if f & required != required {
             continue;
         }
-        if create.usage == VMA_MEMORY_USAGE_CPU_COPY && f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT != 0 {
+        if create.usage == VMA_MEMORY_USAGE_CPU_COPY && f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT != 0
+        {
             continue;
         }
         let score = (f & preferred).count_ones();
@@ -353,11 +378,15 @@ unsafe fn place(
     extra_align: u64,
     dedicated_buffer: VkBuffer,
     dedicated_image: VkImage,
+    p_memory_allocate_next: *mut c_void,
 ) -> Result<*mut Allocation, VkResult> {
     let ty = find_memory_type(a, req.memory_type_bits, create)?;
     let mut align = req.alignment.max(1);
     if extra_align > 1 {
         align = align.max(extra_align);
+    }
+    if create.min_alignment > 1 {
+        align = align.max(create.min_alignment);
     }
     if !create.pool.is_null() {
         let palign = (*create.pool).create.min_allocation_alignment;
@@ -366,9 +395,23 @@ unsafe fn place(
         }
     }
     let size = align_up(req.size.max(1), align);
-    let dedicated = want_dedicated(create, req) && create.flags & VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT == 0;
+    let dedicated =
+        want_dedicated(create, req) && create.flags & VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT == 0;
+    let p_next = if !create.pool.is_null() {
+        (*create.pool).create.p_memory_allocate_next
+    } else {
+        p_memory_allocate_next
+    };
     if dedicated {
-        return dedicated_alloc(a, ty, size, create, dedicated_buffer, dedicated_image);
+        return dedicated_alloc(
+            a,
+            ty,
+            size,
+            create,
+            dedicated_buffer,
+            dedicated_image,
+            p_next,
+        );
     }
     let heap = a.mem.memory_types[ty as usize].heap_index;
     let bsize = if !create.pool.is_null() && (*create.pool).create.block_size != 0 {
@@ -380,7 +423,15 @@ unsafe fn place(
         if create.flags & VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT != 0 {
             return Err(VK_ERROR_OUT_OF_DEVICE_MEMORY);
         }
-        return dedicated_alloc(a, ty, size, create, dedicated_buffer, dedicated_image);
+        return dedicated_alloc(
+            a,
+            ty,
+            size,
+            create,
+            dedicated_buffer,
+            dedicated_image,
+            p_next,
+        );
     }
     let flags = create.flags;
     let try_blocks = |blocks: &mut Vec<Block>| -> Option<(usize, u64)> {
@@ -411,7 +462,15 @@ unsafe fn place(
             if (*create.pool).blocks.len() >= maxb {
                 return Err(VK_ERROR_OUT_OF_DEVICE_MEMORY);
             }
-            new_block(a, ty, bsize, pflags, dedicated_buffer, dedicated_image)?;
+            new_block(
+                a,
+                ty,
+                bsize,
+                pflags,
+                dedicated_buffer,
+                dedicated_image,
+                p_next,
+            )?;
             let b = a.types[ty as usize].blocks.pop().unwrap();
             let pool = &mut *create.pool;
             pool.blocks.push(b);
@@ -430,7 +489,7 @@ unsafe fn place(
             if create.flags & VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT != 0 {
                 return Err(VK_ERROR_OUT_OF_DEVICE_MEMORY);
             }
-            new_block(a, ty, bsize, 0, 0, 0)?;
+            new_block(a, ty, bsize, 0, 0, 0, p_next)?;
             let t = &mut a.types[ty as usize];
             let i = t.blocks.len() - 1;
             let off = t.blocks[i]
@@ -493,8 +552,9 @@ unsafe fn new_block(
     pool_flags: u32,
     buf: VkBuffer,
     img: VkImage,
+    p_memory_allocate_next: *mut c_void,
 ) -> Result<(), VkResult> {
-    let mem = alloc_vk_memory(a, ty, size, buf, img)?;
+    let mem = alloc_vk_memory(a, ty, size, buf, img, p_memory_allocate_next)?;
     let linear = pool_flags & VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT != 0;
     a.types[ty as usize].blocks.push(Block {
         memory: mem,
@@ -514,22 +574,16 @@ unsafe fn dedicated_alloc(
     create: &VmaAllocationCreateInfo,
     buf: VkBuffer,
     img: VkImage,
+    p_memory_allocate_next: *mut c_void,
 ) -> Result<*mut Allocation, VkResult> {
     let can_alias = create.flags & VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT != 0;
     let (db, di) = if can_alias { (0, 0) } else { (buf, img) };
-    let mem = alloc_vk_memory(a, ty, size, db, di)?;
+    let mem = alloc_vk_memory(a, ty, size, db, di, p_memory_allocate_next)?;
     let mut mapped = core::ptr::null_mut();
     if create.flags & VMA_ALLOCATION_CREATE_MAPPED_BIT != 0 {
         let props = a.mem.memory_types[ty as usize].property_flags;
         if props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0 {
-            let r = a.funcs.vk_map_memory.unwrap()(
-                a.device,
-                mem,
-                0,
-                VK_WHOLE_SIZE,
-                0,
-                &mut mapped,
-            );
+            let r = a.funcs.vk_map_memory.unwrap()(a.device, mem, 0, VK_WHOLE_SIZE, 0, &mut mapped);
             if r != VK_SUCCESS {
                 a.funcs.vk_free_memory.unwrap()(a.device, mem, core::ptr::null());
                 return Err(r);
@@ -612,7 +666,7 @@ pub unsafe fn allocate_memory(
     }
     let a = &mut *allocator;
     let _g = lock_if(a);
-    match place(a, &*req, &*create, 1, 0, 0) {
+    match place(a, &*req, &*create, 1, 0, 0, core::ptr::null_mut()) {
         Ok(p) => {
             *out = p;
             if !info.is_null() {
@@ -699,7 +753,11 @@ pub unsafe fn fill_info(p: *mut Allocation, info: *mut VmaAllocationInfo) {
         size: a.size,
         p_mapped_data: a.mapped,
         p_user_data: a.user_data,
-        p_name: a.name.as_ref().map(|s| s.as_ptr()).unwrap_or(core::ptr::null()),
+        p_name: a
+            .name
+            .as_ref()
+            .map(|s| s.as_ptr())
+            .unwrap_or(core::ptr::null()),
     };
 }
 
@@ -842,6 +900,7 @@ pub unsafe fn create_buffer(
     buf_ci: *const VkBufferCreateInfo,
     alloc_ci: *const VmaAllocationCreateInfo,
     extra_align: u64,
+    p_memory_allocate_next: *mut c_void,
     out_buf: *mut VkBuffer,
     out_alloc: *mut VmaAllocation,
     info: *mut VmaAllocationInfo,
@@ -862,18 +921,15 @@ pub unsafe fn create_buffer(
         memory_type_bits: 0,
     };
     a.funcs.vk_get_buffer_memory_requirements.unwrap()(a.device, buf, &mut req);
-    if extra_align > 1 {
-        req.alignment = req.alignment.max(extra_align);
+    let extra = extra_align.max((*alloc_ci).min_alignment);
+    if extra > 1 {
+        req.alignment = req.alignment.max(extra);
     }
-    match place(a, &req, &*alloc_ci, extra_align, buf, 0) {
+    match place(a, &req, &*alloc_ci, extra, buf, 0, p_memory_allocate_next) {
         Ok(p) => {
             if (*alloc_ci).flags & VMA_ALLOCATION_CREATE_DONT_BIND_BIT == 0 {
-                let br = a.funcs.vk_bind_buffer_memory.unwrap()(
-                    a.device,
-                    buf,
-                    (*p).memory,
-                    (*p).offset,
-                );
+                let br =
+                    a.funcs.vk_bind_buffer_memory.unwrap()(a.device, buf, (*p).memory, (*p).offset);
                 if br != VK_SUCCESS {
                     free_inner(a, p);
                     a.funcs.vk_destroy_buffer.unwrap()(a.device, buf, core::ptr::null());
@@ -900,6 +956,7 @@ pub unsafe fn create_image(
     allocator: VmaAllocator,
     img_ci: *const VkImageCreateInfo,
     alloc_ci: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
     out_img: *mut VkImage,
     out_alloc: *mut VmaAllocation,
     info: *mut VmaAllocationInfo,
@@ -920,7 +977,10 @@ pub unsafe fn create_image(
         memory_type_bits: 0,
     };
     a.funcs.vk_get_image_memory_requirements.unwrap()(a.device, img, &mut req);
-    match place(a, &req, &*alloc_ci, 1, 0, img) {
+    if (*alloc_ci).min_alignment > 1 {
+        req.alignment = req.alignment.max((*alloc_ci).min_alignment);
+    }
+    match place(a, &req, &*alloc_ci, 1, 0, img, p_memory_allocate_next) {
         Ok(p) => {
             if (*alloc_ci).flags & VMA_ALLOCATION_CREATE_DONT_BIND_BIT == 0 {
                 let br =
@@ -945,6 +1005,93 @@ pub unsafe fn create_image(
             e
         }
     }
+}
+
+/// 3.4: always dedicated; `pMemoryAllocateNext` is chained onto `VkMemoryAllocateInfo`.
+pub unsafe fn allocate_dedicated_memory(
+    allocator: VmaAllocator,
+    req: *const VkMemoryRequirements,
+    create: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
+    out: *mut VmaAllocation,
+    info: *mut VmaAllocationInfo,
+) -> VkResult {
+    if create.is_null() {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    let mut ci = *create;
+    ci.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    if allocator.is_null() || req.is_null() || out.is_null() {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    let a = &mut *allocator;
+    let _g = lock_if(a);
+    match place(a, &*req, &ci, 1, 0, 0, p_memory_allocate_next) {
+        Ok(p) => {
+            *out = p;
+            if !info.is_null() {
+                fill_info(p, info);
+            }
+            VK_SUCCESS
+        }
+        Err(e) => {
+            *out = core::ptr::null_mut();
+            e
+        }
+    }
+}
+
+/// 3.4: dedicated buffer plus optional `pMemoryAllocateNext`.
+pub unsafe fn create_dedicated_buffer(
+    allocator: VmaAllocator,
+    buf_ci: *const VkBufferCreateInfo,
+    alloc_ci: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
+    out_buf: *mut VkBuffer,
+    out_alloc: *mut VmaAllocation,
+    info: *mut VmaAllocationInfo,
+) -> VkResult {
+    if alloc_ci.is_null() {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    let mut ci = *alloc_ci;
+    ci.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    create_buffer(
+        allocator,
+        buf_ci,
+        &ci,
+        1,
+        p_memory_allocate_next,
+        out_buf,
+        out_alloc,
+        info,
+    )
+}
+
+/// 3.4: dedicated image plus optional `pMemoryAllocateNext`.
+pub unsafe fn create_dedicated_image(
+    allocator: VmaAllocator,
+    img_ci: *const VkImageCreateInfo,
+    alloc_ci: *const VmaAllocationCreateInfo,
+    p_memory_allocate_next: *mut c_void,
+    out_img: *mut VkImage,
+    out_alloc: *mut VmaAllocation,
+    info: *mut VmaAllocationInfo,
+) -> VkResult {
+    if alloc_ci.is_null() {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    let mut ci = *alloc_ci;
+    ci.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    create_image(
+        allocator,
+        img_ci,
+        &ci,
+        p_memory_allocate_next,
+        out_img,
+        out_alloc,
+        info,
+    )
 }
 
 pub unsafe fn destroy_buffer(allocator: VmaAllocator, buffer: VkBuffer, allocation: VmaAllocation) {
@@ -1003,7 +1150,17 @@ pub unsafe fn create_pool(
         } else {
             block_size_for(a, heap)
         };
-        if new_block(a, ci.memory_type_index, bsize, ci.flags, 0, 0).is_err() {
+        if new_block(
+            a,
+            ci.memory_type_index,
+            bsize,
+            ci.flags,
+            0,
+            0,
+            ci.p_memory_allocate_next,
+        )
+        .is_err()
+        {
             break;
         }
         let b = a.types[ci.memory_type_index as usize].blocks.pop().unwrap();
@@ -1044,7 +1201,12 @@ pub unsafe fn bind_buffer(
         return VK_ERROR_UNKNOWN;
     }
     let a = &*allocator;
-    a.funcs.vk_bind_buffer_memory.unwrap()(a.device, buffer, (*allocation).memory, (*allocation).offset)
+    a.funcs.vk_bind_buffer_memory.unwrap()(
+        a.device,
+        buffer,
+        (*allocation).memory,
+        (*allocation).offset,
+    )
 }
 
 pub unsafe fn bind_image(
@@ -1056,7 +1218,12 @@ pub unsafe fn bind_image(
         return VK_ERROR_UNKNOWN;
     }
     let a = &*allocator;
-    a.funcs.vk_bind_image_memory.unwrap()(a.device, image, (*allocation).memory, (*allocation).offset)
+    a.funcs.vk_bind_image_memory.unwrap()(
+        a.device,
+        image,
+        (*allocation).memory,
+        (*allocation).offset,
+    )
 }
 
 pub fn add_stats(dst: &mut VmaStatistics, src: &VmaStatistics) {
@@ -1151,7 +1318,11 @@ pub unsafe fn copy_to_allocation(
     if r != VK_SUCCESS {
         return r;
     }
-    core::ptr::copy_nonoverlapping(src as *const u8, (p as *mut u8).add(offset as usize), size as usize);
+    core::ptr::copy_nonoverlapping(
+        src as *const u8,
+        (p as *mut u8).add(offset as usize),
+        size as usize,
+    );
     let _ = flush_allocation(allocator, allocation, offset, size);
     unmap_memory(allocator, allocation);
     VK_SUCCESS
@@ -1173,7 +1344,11 @@ pub unsafe fn copy_from_allocation(
         return r;
     }
     let _ = invalidate_allocation(allocator, allocation, offset, size);
-    core::ptr::copy_nonoverlapping((p as *const u8).add(offset as usize), dst as *mut u8, size as usize);
+    core::ptr::copy_nonoverlapping(
+        (p as *const u8).add(offset as usize),
+        dst as *mut u8,
+        size as usize,
+    );
     unmap_memory(allocator, allocation);
     VK_SUCCESS
 }
@@ -1623,7 +1798,7 @@ pub unsafe fn allocate_memory_for_buffer(
         memory_type_bits: 0,
     };
     a.funcs.vk_get_buffer_memory_requirements.unwrap()(a.device, buffer, &mut req);
-    match place(a, &req, &*create, 1, buffer, 0) {
+    match place(a, &req, &*create, 1, buffer, 0, core::ptr::null_mut()) {
         Ok(p) => {
             *out = p;
             if !info.is_null() {
@@ -1653,7 +1828,7 @@ pub unsafe fn allocate_memory_for_image(
         memory_type_bits: 0,
     };
     a.funcs.vk_get_image_memory_requirements.unwrap()(a.device, image, &mut req);
-    match place(a, &req, &*create, 1, 0, image) {
+    match place(a, &req, &*create, 1, 0, image, core::ptr::null_mut()) {
         Ok(p) => {
             *out = p;
             if !info.is_null() {
@@ -1703,7 +1878,11 @@ pub unsafe fn get_allocation_info2(
     (*info).block_size = if al.dedicated {
         al.size
     } else if !al.pool.is_null() {
-        (*al.pool).blocks.get(al.block).map(|b| b.size).unwrap_or(al.size)
+        (*al.pool)
+            .blocks
+            .get(al.block)
+            .map(|b| b.size)
+            .unwrap_or(al.size)
     } else {
         (*allocator).types[al.type_index as usize]
             .blocks
@@ -1760,6 +1939,17 @@ pub unsafe fn get_memory_win32_handle(
     VK_ERROR_FEATURE_NOT_PRESENT
 }
 
+/// 3.4 Win32 export. Linux has no `VK_KHR_external_memory_win32`.
+pub unsafe fn get_memory_win32_handle2(
+    _allocator: VmaAllocator,
+    _allocation: VmaAllocation,
+    _handle_type: u32,
+    _process: *mut c_void,
+    _handle: *mut *mut c_void,
+) -> VkResult {
+    VK_ERROR_FEATURE_NOT_PRESENT
+}
+
 pub unsafe fn flush_allocations(
     allocator: VmaAllocator,
     count: u32,
@@ -1776,7 +1966,11 @@ pub unsafe fn flush_allocations(
         if al.is_null() {
             continue;
         }
-        let off = if offsets.is_null() { 0 } else { *offsets.add(i) };
+        let off = if offsets.is_null() {
+            0
+        } else {
+            *offsets.add(i)
+        };
         let sz = if sizes.is_null() {
             VK_WHOLE_SIZE
         } else {
@@ -1806,7 +2000,11 @@ pub unsafe fn invalidate_allocations(
         if al.is_null() {
             continue;
         }
-        let off = if offsets.is_null() { 0 } else { *offsets.add(i) };
+        let off = if offsets.is_null() {
+            0
+        } else {
+            *offsets.add(i)
+        };
         let sz = if sizes.is_null() {
             VK_WHOLE_SIZE
         } else {

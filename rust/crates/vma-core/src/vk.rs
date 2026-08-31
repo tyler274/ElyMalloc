@@ -45,9 +45,18 @@ pub const VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD: u32 = 0x40;
 
 pub const VK_IMAGE_TILING_OPTIMAL: u32 = 0;
 pub const VK_IMAGE_TILING_LINEAR: u32 = 1;
+pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x00000001;
+pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x00000002;
+pub const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: u32 = 0x00000010;
+pub const VK_BUFFER_USAGE_INDEX_BUFFER_BIT: u32 = 0x00000040;
+pub const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: u32 = 0x00000080;
 pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT: u32 = 0x00020000;
 pub const VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT: u32 = 0x2;
+pub const VK_IMAGE_USAGE_TRANSFER_DST_BIT: u32 = 0x00000002;
+pub const VK_IMAGE_USAGE_SAMPLED_BIT: u32 = 0x00000004;
+pub const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12);
 
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: i32 = 1000059001;
 pub const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: i32 = 5;
 pub const VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE: i32 = 6;
 pub const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: i32 = 12;
@@ -232,6 +241,14 @@ pub struct VkPhysicalDeviceProperties {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct VkPhysicalDeviceProperties2 {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub properties: VkPhysicalDeviceProperties,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct VkMemoryRequirements {
     pub size: VkDeviceSize,
     pub alignment: VkDeviceSize,
@@ -381,17 +398,16 @@ pub struct VkDeviceImageMemoryRequirements {
 }
 
 pub type PFN_vkVoidFunction = Option<unsafe extern "system" fn()>;
-pub type PFN_vkGetInstanceProcAddr = Option<
-    unsafe extern "system" fn(VkInstance, *const c_char) -> PFN_vkVoidFunction,
->;
+pub type PFN_vkGetInstanceProcAddr =
+    Option<unsafe extern "system" fn(VkInstance, *const c_char) -> PFN_vkVoidFunction>;
 pub type PFN_vkGetDeviceProcAddr =
     Option<unsafe extern "system" fn(VkDevice, *const c_char) -> PFN_vkVoidFunction>;
-pub type PFN_vkGetPhysicalDeviceProperties = Option<
-    unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties),
->;
-pub type PFN_vkGetPhysicalDeviceMemoryProperties = Option<
-    unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties),
->;
+pub type PFN_vkGetPhysicalDeviceProperties =
+    Option<unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties)>;
+pub type PFN_vkGetPhysicalDeviceProperties2 =
+    Option<unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties2)>;
+pub type PFN_vkGetPhysicalDeviceMemoryProperties =
+    Option<unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties)>;
 pub type PFN_vkAllocateMemory = Option<
     unsafe extern "system" fn(
         VkDevice,
@@ -400,9 +416,8 @@ pub type PFN_vkAllocateMemory = Option<
         *mut VkDeviceMemory,
     ) -> VkResult,
 >;
-pub type PFN_vkFreeMemory = Option<
-    unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const VkAllocationCallbacks),
->;
+pub type PFN_vkFreeMemory =
+    Option<unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const VkAllocationCallbacks)>;
 pub type PFN_vkMapMemory = Option<
     unsafe extern "system" fn(
         VkDevice,
@@ -414,24 +429,18 @@ pub type PFN_vkMapMemory = Option<
     ) -> VkResult,
 >;
 pub type PFN_vkUnmapMemory = Option<unsafe extern "system" fn(VkDevice, VkDeviceMemory)>;
-pub type PFN_vkFlushMappedMemoryRanges = Option<
-    unsafe extern "system" fn(VkDevice, u32, *const VkMappedMemoryRange) -> VkResult,
->;
-pub type PFN_vkInvalidateMappedMemoryRanges = Option<
-    unsafe extern "system" fn(VkDevice, u32, *const VkMappedMemoryRange) -> VkResult,
->;
-pub type PFN_vkBindBufferMemory = Option<
-    unsafe extern "system" fn(VkDevice, VkBuffer, VkDeviceMemory, VkDeviceSize) -> VkResult,
->;
-pub type PFN_vkBindImageMemory = Option<
-    unsafe extern "system" fn(VkDevice, VkImage, VkDeviceMemory, VkDeviceSize) -> VkResult,
->;
-pub type PFN_vkGetBufferMemoryRequirements = Option<
-    unsafe extern "system" fn(VkDevice, VkBuffer, *mut VkMemoryRequirements),
->;
-pub type PFN_vkGetImageMemoryRequirements = Option<
-    unsafe extern "system" fn(VkDevice, VkImage, *mut VkMemoryRequirements),
->;
+pub type PFN_vkFlushMappedMemoryRanges =
+    Option<unsafe extern "system" fn(VkDevice, u32, *const VkMappedMemoryRange) -> VkResult>;
+pub type PFN_vkInvalidateMappedMemoryRanges =
+    Option<unsafe extern "system" fn(VkDevice, u32, *const VkMappedMemoryRange) -> VkResult>;
+pub type PFN_vkBindBufferMemory =
+    Option<unsafe extern "system" fn(VkDevice, VkBuffer, VkDeviceMemory, VkDeviceSize) -> VkResult>;
+pub type PFN_vkBindImageMemory =
+    Option<unsafe extern "system" fn(VkDevice, VkImage, VkDeviceMemory, VkDeviceSize) -> VkResult>;
+pub type PFN_vkGetBufferMemoryRequirements =
+    Option<unsafe extern "system" fn(VkDevice, VkBuffer, *mut VkMemoryRequirements)>;
+pub type PFN_vkGetImageMemoryRequirements =
+    Option<unsafe extern "system" fn(VkDevice, VkImage, *mut VkMemoryRequirements)>;
 pub type PFN_vkCreateBuffer = Option<
     unsafe extern "system" fn(
         VkDevice,
@@ -440,9 +449,8 @@ pub type PFN_vkCreateBuffer = Option<
         *mut VkBuffer,
     ) -> VkResult,
 >;
-pub type PFN_vkDestroyBuffer = Option<
-    unsafe extern "system" fn(VkDevice, VkBuffer, *const VkAllocationCallbacks),
->;
+pub type PFN_vkDestroyBuffer =
+    Option<unsafe extern "system" fn(VkDevice, VkBuffer, *const VkAllocationCallbacks)>;
 pub type PFN_vkCreateImage = Option<
     unsafe extern "system" fn(
         VkDevice,
@@ -451,26 +459,39 @@ pub type PFN_vkCreateImage = Option<
         *mut VkImage,
     ) -> VkResult,
 >;
-pub type PFN_vkDestroyImage = Option<
-    unsafe extern "system" fn(VkDevice, VkImage, *const VkAllocationCallbacks),
->;
+pub type PFN_vkDestroyImage =
+    Option<unsafe extern "system" fn(VkDevice, VkImage, *const VkAllocationCallbacks)>;
 pub type PFN_vkCmdCopyBuffer = Option<unsafe extern "system" fn()>;
 pub type PFN_vkGetBufferMemoryRequirements2 = Option<
-    unsafe extern "system" fn(VkDevice, *const VkBufferMemoryRequirementsInfo2, *mut VkMemoryRequirements2),
+    unsafe extern "system" fn(
+        VkDevice,
+        *const VkBufferMemoryRequirementsInfo2,
+        *mut VkMemoryRequirements2,
+    ),
 >;
 pub type PFN_vkGetImageMemoryRequirements2 = Option<
-    unsafe extern "system" fn(VkDevice, *const VkImageMemoryRequirementsInfo2, *mut VkMemoryRequirements2),
+    unsafe extern "system" fn(
+        VkDevice,
+        *const VkImageMemoryRequirementsInfo2,
+        *mut VkMemoryRequirements2,
+    ),
 >;
-pub type PFN_vkBindBufferMemory2 = Option<
-    unsafe extern "system" fn(VkDevice, u32, *const VkBindBufferMemoryInfo) -> VkResult,
->;
-pub type PFN_vkBindImageMemory2 = Option<
-    unsafe extern "system" fn(VkDevice, u32, *const VkBindImageMemoryInfo) -> VkResult,
->;
+pub type PFN_vkBindBufferMemory2 =
+    Option<unsafe extern "system" fn(VkDevice, u32, *const VkBindBufferMemoryInfo) -> VkResult>;
+pub type PFN_vkBindImageMemory2 =
+    Option<unsafe extern "system" fn(VkDevice, u32, *const VkBindImageMemoryInfo) -> VkResult>;
 pub type PFN_vkGetPhysicalDeviceMemoryProperties2 = Option<unsafe extern "system" fn()>;
 pub type PFN_vkGetDeviceBufferMemoryRequirements = Option<
-    unsafe extern "system" fn(VkDevice, *const VkDeviceBufferMemoryRequirements, *mut VkMemoryRequirements2),
+    unsafe extern "system" fn(
+        VkDevice,
+        *const VkDeviceBufferMemoryRequirements,
+        *mut VkMemoryRequirements2,
+    ),
 >;
 pub type PFN_vkGetDeviceImageMemoryRequirements = Option<
-    unsafe extern "system" fn(VkDevice, *const VkDeviceImageMemoryRequirements, *mut VkMemoryRequirements2),
+    unsafe extern "system" fn(
+        VkDevice,
+        *const VkDeviceImageMemoryRequirements,
+        *mut VkMemoryRequirements2,
+    ),
 >;

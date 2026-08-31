@@ -1,7 +1,8 @@
-//! Vulkan Memory Allocator C ABI checks (virtual allocator + exported symbols).
+//! Vulkan Memory Allocator C ABI checks (virtual allocator, 3.4 symbols,
+//! Blender-style device smoke with in-process fake Vulkan).
 
 use std::os::unix::fs::symlink;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -30,6 +31,18 @@ const REQUIRED_SYMS: &[&str] = &[
     "vmaEndDefragmentation",
     "vmaBuildStatsString",
     "vmaFreeStatsString",
+    "vmaAllocateDedicatedMemory",
+    "vmaCreateDedicatedBuffer",
+    "vmaCreateDedicatedImage",
+    "vmaGetMemoryWin32Handle2",
+    "vmaCalculateStatistics",
+    "vmaGetHeapBudgets",
+];
+
+const C_SMOKES: &[(&str, &str)] = &[
+    ("vma-virtual.c", "vma-virtual"),
+    ("vma-abi-34.c", "vma-abi-34"),
+    ("vma-blender.c", "vma-blender"),
 ];
 
 fn so_path() -> PathBuf {
@@ -42,6 +55,27 @@ fn so_path() -> PathBuf {
         return release;
     }
     rust.join("target/debug/libVulkanMemoryAllocator.so")
+}
+
+fn compile_c_smoke(cc: &str, include: &Path, sodir: &Path, src: &Path, bin: &Path) -> Result<()> {
+    let i_flag = format!("-I{}", include.display());
+    let l_flag = format!("-L{}", sodir.display());
+    let rpath = format!("-Wl,-rpath,{}", sodir.display());
+    let src_s = src.to_string_lossy();
+    compile(
+        cc,
+        &[
+            "-O1",
+            "-Wall",
+            "-Werror",
+            &i_flag,
+            src_s.as_ref(),
+            &l_flag,
+            "-lVulkanMemoryAllocator",
+            &rpath,
+        ],
+        bin,
+    )
 }
 
 pub fn run() -> Result<()> {
@@ -82,34 +116,20 @@ pub fn run() -> Result<()> {
     }
 
     let include = rust.join("crates/vma-c/include");
-    let src = rust.join("tests/vma-virtual.c");
     let out_dir = rust.join("target/vma-abi");
-    let bin = out_dir.join("vma-virtual");
     let sodir = so.parent().unwrap();
     let soname = sodir.join("libVulkanMemoryAllocator.so.3");
     let _ = std::fs::remove_file(&soname);
     symlink(so.file_name().context("so name")?, &soname).ok();
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    let i_flag = format!("-I{}", include.display());
-    let l_flag = format!("-L{}", sodir.display());
-    let rpath = format!("-Wl,-rpath,{}", sodir.display());
-    let src_s = src.to_string_lossy();
-    compile(
-        &cc,
-        &[
-            "-O1",
-            "-Wall",
-            "-Werror",
-            &i_flag,
-            src_s.as_ref(),
-            &l_flag,
-            "-lVulkanMemoryAllocator",
-            &rpath,
-        ],
-        &bin,
-    )?;
-    run_ok(&bin, &[], &[])?;
-    println!("ok vma-virtual");
+
+    for (src_name, bin_name) in C_SMOKES {
+        let src = rust.join("tests").join(src_name);
+        let bin = out_dir.join(bin_name);
+        compile_c_smoke(&cc, &include, sodir, &src, &bin)?;
+        run_ok(&bin, &[], &[])?;
+        println!("ok {bin_name}");
+    }
     println!("all vma ABI checks passed");
     Ok(())
 }
