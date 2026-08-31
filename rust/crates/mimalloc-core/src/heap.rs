@@ -1007,6 +1007,8 @@ pub unsafe fn theap_get_default() -> *mut Theap {
 
 /// `mi_heap_area_t`: one page as seen by `mi_heap_visit_blocks`.
 #[repr(C)]
+/// Layout-compatible with C `mi_heap_area_t`.
+#[repr(C)]
 pub struct HeapArea {
     /// Start of the block area.
     pub blocks: *mut u8,

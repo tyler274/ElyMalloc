@@ -1,3 +1,5 @@
+//! Stable names for rustc UI cases and filesystem-safe capture keys.
+
 use std::path::Path;
 
 /// Unique rustc UI id: path under `tests/ui/` with `/` → `__`, no `.rs`.

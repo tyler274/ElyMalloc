@@ -23,7 +23,7 @@ pub fn rustc_fail_names(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `comm -13 baseline rust` — names in `rust` that are not in `baseline`.
+/// `comm -13 baseline rust` - names in `rust` that are not in `baseline`.
 pub fn only_in_left(rust: &[String], baseline: &[String]) -> Vec<String> {
     let mut base = baseline.to_vec();
     base.sort();

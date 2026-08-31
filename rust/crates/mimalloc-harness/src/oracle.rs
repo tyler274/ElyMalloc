@@ -1,3 +1,11 @@
+//! Compiler-suite oracle: rewrite FAIL set must be a subset of C mimalloc
+//! (`MI_SECURE=FULL`) and stock jemalloc.
+//!
+//! GCC/Clang/rustc programs are compiled **once** with the system toolchain,
+//! then the same binaries run under `LD_PRELOAD`. PASS is stdout, stderr, and
+//! exit matching system malloc - compile success is not enough. Rustc is
+//! compared against **both** C mimalloc and jemalloc.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;

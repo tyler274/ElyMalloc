@@ -1,3 +1,5 @@
+//! CLI for the rewrite test harness ([`mimalloc_harness`]).
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 

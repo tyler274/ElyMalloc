@@ -1,4 +1,7 @@
-//! WASM import section: fail if a libc-style malloc is imported.
+//! WASM import section: fail if a libc-style `malloc` is imported.
+//!
+//! `wasm32-unknown-unknown` must not import `env::malloc`. WASI may import
+//! `wasi_snapshot_preview1` but not libc malloc.
 
 use std::path::Path;
 

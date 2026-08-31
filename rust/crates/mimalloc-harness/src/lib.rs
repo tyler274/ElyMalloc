@@ -1,7 +1,22 @@
 //! Logic for the mimalloc rewrite test harness.
 //!
-//! Drivers live in this crate so filters, output comparison, FAIL-set diffs,
-//! and WASM import checks can be unit-tested without shell.
+//! Drivers live here so filters, output comparison, FAIL-set diffs, and WASM
+//! import checks can be unit-tested without shell. The binary
+//! (`mimalloc-harness`) is a thin clap front-end.
+//!
+//! | Module | `mimalloc-harness` subcommand |
+//! |--------|-------------------------------|
+//! | [`run`] | `run` - cargo tests + C ABI + wasm smoke |
+//! | [`cabi`] | `c-abi` |
+//! | [`wasm_smoke`] | `wasm-smoke` |
+//! | [`preload`] | `compiler-preload` |
+//! | [`oracle`] | `oracle` (rewrite ⊆ C mimalloc and jemalloc) |
+//! | [`linkers`] | `linkers` |
+//! | [`mod@bench`] | `bench` |
+//! | [`world`] | `world` |
+//! | [`projects`] | `projects` (Bun, Serde) |
+//! | [`vma`] | `vma` (AMD VMA 3.4) |
+//! | [`browsers`] | `browsers` |
 
 pub mod bench;
 pub mod browsers;
@@ -45,10 +60,12 @@ pub fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// `true` if environment variable `name` is the string `1`.
 pub fn env_is_one(name: &str) -> bool {
     std::env::var(name).ok().as_deref() == Some("1")
 }
 
+/// `PATH` lookup; `None` if the program is missing.
 pub fn which(name: &str) -> Option<PathBuf> {
     which::which(name).ok()
 }

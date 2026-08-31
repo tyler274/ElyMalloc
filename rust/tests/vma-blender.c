@@ -4,7 +4,7 @@
  * staging: Vulkan 1.2, BUFFER_DEVICE_ADDRESS, EXT_MEMORY_PRIORITY,
  * KHR_MAINTENANCE4, EXT_MEMORY_BUDGET; vertex/index/uniform buffers; GPU-only
  * images; mapped sequential-write staging; custom pool; 3.4 dedicated +
- * minAlignment. Fake Vulkan lives in this file — no GPU, no libvulkan. */
+ * minAlignment. Fake Vulkan lives in this file - no GPU, no libvulkan. */
 #include "vk_mem_alloc.h"
 #include <stdint.h>
 #include <stdio.h>

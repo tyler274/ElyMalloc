@@ -1,3 +1,5 @@
+//! Build and run the libc-less `#[global_allocator]` wasm smokes under wasmtime.
+
 use std::path::PathBuf;
 use std::process::Command;
 

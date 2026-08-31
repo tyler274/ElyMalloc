@@ -148,7 +148,7 @@ const PERF_EVENT_IOC_ENABLE: libc::c_ulong = 0x2400;
 const PERF_EVENT_IOC_DISABLE: libc::c_ulong = 0x2401;
 const PERF_EVENT_IOC_RESET: libc::c_ulong = 0x2402;
 
-/// `PERF_ATTR_SIZE_VER0` (64) — enough for hardware instruction counts.
+/// `PERF_ATTR_SIZE_VER0` (64) - enough for hardware instruction counts.
 #[repr(C)]
 struct PerfEventAttr {
     type_: u32,

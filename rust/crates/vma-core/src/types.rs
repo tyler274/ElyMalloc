@@ -15,11 +15,17 @@ pub const fn vma_make_version(major: u32, minor: u32, patch: u32) -> u32 {
 /// AMD VMA 3.4.0 (`VK_MAKE_VERSION(3, 4, 0)`).
 pub const VMA_VERSION: u32 = vma_make_version(3, 4, 0);
 
+/// Opaque VMA allocator (`VmaAllocator`).
 pub type VmaAllocator = *mut crate::device::Allocator;
+/// Custom pool (`VmaPool`).
 pub type VmaPool = *mut crate::device::Pool;
+/// Suballocation handle (`VmaAllocation`).
 pub type VmaAllocation = *mut crate::device::Allocation;
+/// Defrag pass (`VmaDefragmentationContext`).
 pub type VmaDefragmentationContext = *mut crate::device::Defrag;
+/// GPU-free offset allocator (`VmaVirtualBlock`).
 pub type VmaVirtualBlock = *mut crate::virtual_block::VirtualBlock;
+/// Virtual allocation id (`VmaVirtualAllocation`).
 pub type VmaVirtualAllocation = u64;
 
 pub const VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT: u32 = 0x1;

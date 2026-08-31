@@ -5,6 +5,11 @@
 //! `mimalloc-new-delete.h`; that header is for a single TU when the
 //! library is linked dynamically. Statically whole-archiving this
 //! archive together with that header is a duplicate-definition error.
+//!
+//! # Safety
+//!
+//! Mangling matches the Itanium ABI on 64-bit (`_Znwm`, `_ZdlPv`, sized and
+//! aligned variants). Each `delete` is `mi_free`; each `new` is `mi_new`.
 
 use super::*;
 

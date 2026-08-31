@@ -1,4 +1,7 @@
-//! libc-less `#[global_allocator]` smoke used as a wasm32 binary and a host test.
+//! libc-less `#[global_allocator]` smoke: host unit test and wasm32 binary.
+//!
+//! The wasm module must not import libc `malloc`. Probe ids in [`run`] are
+//! stable so harness logs stay comparable.
 #![no_std]
 
 extern crate alloc;

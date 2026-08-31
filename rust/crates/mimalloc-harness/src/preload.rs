@@ -1,3 +1,5 @@
+//! GCC / Clang / rustc suites: compile once, run under `LD_PRELOAD`, match libc.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;

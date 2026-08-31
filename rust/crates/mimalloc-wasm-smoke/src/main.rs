@@ -1,9 +1,5 @@
 //! Host/WASI entry uses std. `wasm32-unknown-unknown` is `no_std` + exported `smoke`.
-#![cfg_attr(
-    all(target_arch = "wasm32", not(target_os = "wasi")),
-    no_std,
-    no_main
-)]
+#![cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), no_std, no_main)]
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 #[panic_handler]

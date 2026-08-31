@@ -1,4 +1,9 @@
-//! Virtual allocator (C `group_virtual`): same algorithm, no GPU memory.
+//! Virtual allocator (C `group_virtual`): same free-list algorithm, no GPU.
+//!
+//! Offsets live in `[0, size)`. Handles are opaque ids, not Vulkan objects.
+//! Linear mode (`VMA_VIRTUAL_BLOCK_CREATE_LINEAR_ALGORITHM_BIT`) is a bump
+//! (and optional double-ended stack). Exhaustion is
+//! `VK_ERROR_OUT_OF_DEVICE_MEMORY`.
 
 use crate::free_list::{align_up, FreeList};
 use crate::types::*;
@@ -6,12 +11,14 @@ use crate::vk::{VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_FALSE, VK_SUCCESS, VK_TRUE};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 
+/// One virtual allocation (offset + size inside the block).
 pub struct VirtualAlloc {
     pub offset: u64,
     pub size: u64,
     pub user_data: *mut c_void,
 }
 
+/// Offset allocator over a caller-chosen size (no `VkDeviceMemory`).
 pub struct VirtualBlock {
     pub size: u64,
     pub flags: u32,

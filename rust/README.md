@@ -1,6 +1,18 @@
 # Rust mimalloc rewrite
 
-Pure-Rust allocator with a C ABI intended as a drop-in replacement for C mimalloc.
+Pure-Rust allocator with a C ABI intended as a drop-in replacement for C mimalloc **v3.5.0**, plus a pure-Rust AMD VMA **3.4** drop-in.
+
+Crate rustdocs (`//!` / `///`) are the per-module source of truth. This README is the operator map (build, NixOS, harness).
+
+## Crates
+
+| Crate | Role |
+|-------|------|
+| `mimalloc-core` | `no_std` allocator (pages, heaps, arenas). Always-on `MI_SECURE` mitigations. `GlobalAlloc` via `Mimalloc`. |
+| `mimalloc-c` | `cdylib`/`staticlib`: libc + `mi_*`, SONAME `libmimalloc.so.3` or `libmimalloc-secure.so.3`. |
+| `mimalloc-harness` | Oracle, world, browsers, Bun/Serde, VMA, wasm. Logic is unit-tested in the lib. |
+| `vma-core` / `vma-c` | AMD VMA 3.4 C ABI (`libVulkanMemoryAllocator.so.3`). |
+| `mimalloc-wasm-smoke` / `mimalloc-alloc-stress` / `mimalloc-bench` | GlobalAlloc smokes and benches. |
 
 ## Build
 
@@ -71,7 +83,7 @@ static ALLOC: Mimalloc = Mimalloc;
 
 Pure-Rust GPU heap manager with AMD [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) **3.4** C ABI (`vma*` / `Vma*` as in `vk_mem_alloc.h` v3.4.0). Include AMD's header without `VMA_IMPLEMENTATION` (or `crates/vma-c/include/vk_mem_alloc.h`) and link `libVulkanMemoryAllocator.so.3`. Vulkan is called only through `VmaVulkanFunctions` or `libvulkan.so.1`. The virtual allocator needs no GPU.
 
-3.4 ABI extras vs 3.3: `VmaAllocationCreateInfo::minAlignment` (power of two, or 0); `VmaVulkanFunctions::vkGetPhysicalDeviceProperties2KHR`; `vmaAllocateDedicatedMemory` / `vmaCreateDedicatedBuffer` / `vmaCreateDedicatedImage` (optional `pMemoryAllocateNext` on `VkMemoryAllocateInfo`); `vmaGetMemoryWin32Handle2` (Linux stub returns `VK_ERROR_FEATURE_NOT_PRESENT`). `vmaCreateBufferWithAlignment` remains but is obsolete — it folds into `minAlignment`. `VMA_VERSION` is `VK_MAKE_VERSION(3, 4, 0)`. SONAME stays `.so.3`.
+3.4 ABI extras vs 3.3: `VmaAllocationCreateInfo::minAlignment` (power of two, or 0); `VmaVulkanFunctions::vkGetPhysicalDeviceProperties2KHR`; `vmaAllocateDedicatedMemory` / `vmaCreateDedicatedBuffer` / `vmaCreateDedicatedImage` (optional `pMemoryAllocateNext` on `VkMemoryAllocateInfo`); `vmaGetMemoryWin32Handle2` (Linux stub returns `VK_ERROR_FEATURE_NOT_PRESENT`). `vmaCreateBufferWithAlignment` remains but is obsolete - it folds into `minAlignment`. `VMA_VERSION` is `VK_MAKE_VERSION(3, 4, 0)`. SONAME stays `.so.3`.
 
 Tests: `vma-core` unit tests use in-process fake Vulkan, including a Blender GHOST / OpenXR-style workload (Vulkan 1.2, buffer device address, mapped sequential-write vertex/index/uniform buffers, GPU-only images, pools, stats/budgets/defrag, dedicated + `minAlignment`). The harness also compiles C smokes (`vma-virtual.c`, `vma-abi-34.c`, `vma-blender.c`) against the cdylib.
 
@@ -102,7 +114,7 @@ The flake overlay replaces `pkgs.mimalloc` with this library. Mitigations are al
 
 ### World packages (build + run)
 
-Packages from this machine (`NIXOS_CONFIG`, default `/etc/nixos`) are **run** as real workloads under the rewrite, C mimalloc, and libc — git, openssl, python3 (stdlib slice or store python), Node.js, gcc/g++/rustc/mold, KWin `--virtual --exit-with-session`, plasmashell, kreadconfig6, compression, e2fsprogs, … — not `--version`. PASS means stdout, stderr, and exit match libc. Rewrite-only mismatches are FAIL. Injection matches NixOS (`ld-nix.so.preload` via bubblewrap) and lists both `libmimalloc.so` and `libmimalloc-secure.so.3` so nixpkgs mold's `DT_NEEDED` binds the rewrite instead of C mimalloc. The flake check is the sandboxed subset (including python3, node, and mold).
+Packages from this machine (`NIXOS_CONFIG`, default `/etc/nixos`) are **run** as real workloads under the rewrite, C mimalloc, and libc - git, openssl, python3 (stdlib slice or store python), Node.js, gcc/g++/rustc/mold, KWin `--virtual --exit-with-session`, plasmashell, kreadconfig6, compression, e2fsprogs, … - not `--version`. PASS means stdout, stderr, and exit match libc. Rewrite-only mismatches are FAIL. Injection matches NixOS (`ld-nix.so.preload` via bubblewrap) and lists both `libmimalloc.so` and `libmimalloc-secure.so.3` so nixpkgs mold's `DT_NEEDED` binds the rewrite instead of C mimalloc. The flake check is the sandboxed subset (including python3, node, and mold).
 
 ```
 nix build .#world-preload
@@ -159,13 +171,13 @@ nix run .#live          # shell with the rewrite
 
 ## Secure mitigations
 
-Always on (inspired by C `-DMI_SECURE=FULL`): encoded free lists, padding canaries, slack-byte overflow checks (`0xDE`), double-free detection, randomized page free lists, guard pages around page metadata **and at the end of every mimalloc page**, and ASLR-style gaps between OS mappings. Encoded free-list next pointers use `ptr::addr` / `with_exposed_provenance_mut` rather than `as usize` / `as *mut`. Padding fill/compare uses SSE2 (x86_64) or NEON (aarch64). Lengths ≥ 64 bytes use AVX-512 (`AVX512F`+`AVX512BW`) when the CPU and OS enable ZMM state — including Zen 5 — otherwise SSE2. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`. Install both `libmimalloc.so.3` and `libmimalloc-secure.so.3` so programs that `DT_NEEDED` the secure SONAME (for example nixpkgs mold) can `LD_PRELOAD` or replace the C library.
+Always on (inspired by C `-DMI_SECURE=FULL`): encoded free lists, padding canaries, slack-byte overflow checks (`0xDE`), double-free detection, randomized page free lists, guard pages around page metadata **and at the end of every mimalloc page**, and ASLR-style gaps between OS mappings. Encoded free-list next pointers use `ptr::addr` / `with_exposed_provenance_mut` rather than `as usize` / `as *mut`. Padding fill/compare uses SSE2 (x86_64) or NEON (aarch64). Lengths ≥ 64 bytes use AVX-512 (`AVX512F`+`AVX512BW`) when the CPU and OS enable ZMM state - including Zen 5 - otherwise SSE2. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`. Install both `libmimalloc.so.3` and `libmimalloc-secure.so.3` so programs that `DT_NEEDED` the secure SONAME (for example nixpkgs mold) can `LD_PRELOAD` or replace the C library.
 
 Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features debug-fill` (off by default; it is always on in the debug profile).
 
 ## LD_PRELOAD compiler stress
 
-`tests/compiler-preload.sh` (Rust crate `mimalloc-harness`) compiles GCC, Clang, and rustc suite programs with the system toolchain, then runs the **same binaries** with `LD_PRELOAD`. PASS means stdout, stderr, and exit status match the system malloc — compile success is not enough. Cases that already fail with the system malloc are skipped so only allocator regressions count. `tests/oracle-suites.sh` repeats the runs under C mimalloc (`MI_SECURE=FULL`) and stock jemalloc (same binaries) and requires the Rust FAIL set to be a subset of both. Harness filters and output comparison are unit-tested (`cargo test -p mimalloc-harness`).
+`tests/compiler-preload.sh` (Rust crate `mimalloc-harness`) compiles GCC, Clang, and rustc suite programs with the system toolchain, then runs the **same binaries** with `LD_PRELOAD`. PASS means stdout, stderr, and exit status match the system malloc - compile success is not enough. Cases that already fail with the system malloc are skipped so only allocator regressions count. `tests/oracle-suites.sh` repeats the runs under C mimalloc (`MI_SECURE=FULL`) and stock jemalloc (same binaries) and requires the Rust FAIL set to be a subset of both. Harness filters and output comparison are unit-tested (`cargo test -p mimalloc-harness`).
 
 ## Formal verification (Kani)
 

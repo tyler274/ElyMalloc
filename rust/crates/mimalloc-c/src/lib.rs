@@ -7,9 +7,15 @@
 //!
 //! `--features secure` sets SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE`).
 //! Mitigations in the core are always on; the feature only changes the soname.
+//! Install both SONAMEs so a program that `DT_NEEDED` the secure name (nixpkgs
+//! mold) binds this rewrite instead of C mimalloc.
 //!
 //! C++ `operator new`/`delete` (`cxx_new_delete`) are strong `T` symbols,
-//! matching C mimalloc's archive — not only `mimalloc-new-delete.h`.
+//! matching C mimalloc's archive - not only `mimalloc-new-delete.h`.
+//!
+//! The glibc cdylib `DT_NEEDED`s `libc.so.6` and registers teardown with
+//! `__cxa_atexit` (not `atexit`, which is `libc_nonshared` and shows up as
+//! unversioned `U atexit`).
 //!
 //! # Invariants (ABI)
 //!
@@ -17,6 +23,12 @@
 //! - `free(NULL)` is a no-op; foreign pointers are ignored (not undefined).
 //! - `mi_usable_size` is the user request size from the padding trailer.
 //! - Heap/theap/arena/subproc pointers are the core types, `#[repr(C)]`.
+//!
+//! # Safety
+//!
+//! Every `mi_*` / libc export is `unsafe` C ABI. Pointers passed to `free` /
+//! `realloc` must be from this allocator or null. Size/alignment arguments
+//! follow POSIX and `include/mimalloc.h`.
 
 #![cfg_attr(not(test), no_std)]
 #![allow(non_snake_case)]

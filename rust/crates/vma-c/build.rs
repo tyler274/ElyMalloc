@@ -1,3 +1,5 @@
+//! SONAME `libVulkanMemoryAllocator.so.3` (AMD VMA major 3).
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

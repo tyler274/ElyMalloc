@@ -1,5 +1,7 @@
-//! Vulkan types matching `vulkan_core.h` (64-bit). Dispatchable handles are
-//! pointers; non-dispatchable handles are `u64`.
+//! Vulkan types matching `vulkan_core.h` (64-bit Linux ABI).
+//!
+//! This is the subset VMA 3.4 needs, not a full Vulkan binding. Dispatchable
+//! handles are pointers; non-dispatchable handles are `u64`.
 
 use core::ffi::{c_char, c_void};
 

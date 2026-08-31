@@ -1,4 +1,5 @@
-//! Host `#[global_allocator]` stress: Vec/HashMap/threads and the `GlobalAlloc` trait.
+//! Host `#[global_allocator]` stress: `Vec` / `HashMap` / threads and the
+//! [`core::alloc::GlobalAlloc`] trait (high alignment, zeroed, realloc).
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;

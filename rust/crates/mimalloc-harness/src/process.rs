@@ -1,3 +1,5 @@
+//! Spawn helpers: timeouts, `LD_PRELOAD`, bubblewrap, cargo wrappers.
+
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

@@ -12,10 +12,14 @@ use core::ptr;
 pub struct Mimalloc;
 
 unsafe impl GlobalAlloc for Mimalloc {
+    /// # Safety
+    /// `layout` must be a valid [`Layout`]. The returned block is uninitialized.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         mi::malloc_aligned(layout.size(), layout.align())
     }
 
+    /// # Safety
+    /// Same as [`GlobalAlloc::alloc`]; the block is zeroed on success.
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let p = self.alloc(layout);
         if !p.is_null() && layout.size() != 0 {
@@ -24,10 +28,14 @@ unsafe impl GlobalAlloc for Mimalloc {
         p
     }
 
+    /// # Safety
+    /// `ptr` is from a previous `alloc` / `realloc` of this allocator, or null.
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         mi::free(ptr);
     }
 
+    /// # Safety
+    /// `ptr`/`layout` match a live allocation; `new_size` is the new request.
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if layout.align() <= 16 {
             return mi::realloc(ptr, new_size);

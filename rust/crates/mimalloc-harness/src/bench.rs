@@ -1,4 +1,6 @@
-//! Compare malloc implementations: wall time and user-mode instructions.
+//! Compare malloc implementations: wall time (`CLOCK_MONOTONIC`) and user-mode
+//! instructions (`perf_event_open`). Same C binary under `LD_PRELOAD` of glibc,
+//! this rewrite (both SONAMEs), C mimalloc, and jemalloc.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

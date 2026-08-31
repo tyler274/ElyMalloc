@@ -1,3 +1,9 @@
+//! C ABI / LD_PRELOAD checks against `libmimalloc.so`.
+//!
+//! Compiles `rust/tests` and upstream `test/` smokes, then runs them with
+//! `SO` preloaded. `INCLUDE` is the C `include/` tree. A second pass uses
+//! the secure SONAME copy.
+
 use std::ffi::OsString;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};

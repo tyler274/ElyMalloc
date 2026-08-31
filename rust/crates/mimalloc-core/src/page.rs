@@ -8,10 +8,10 @@
 //!
 //! C `mi_page_t` keeps three lists:
 //!
-//! - `free` — ready for `malloc` (this rewrite pops `local_free` after
+//! - `free` - ready for `malloc` (this rewrite pops `local_free` after
 //!   [`collect`] merges `thread_free`).
-//! - `local_free` — blocks freed by the owning thread; not yet on the alloc path.
-//! - `thread_free` — blocks freed by other threads (lock-free push).
+//! - `local_free` - blocks freed by the owning thread; not yet on the alloc path.
+//! - `thread_free` - blocks freed by other threads (lock-free push).
 //!
 //! Accounting (C `types.h`):
 //!
@@ -273,7 +273,7 @@ fn block_align(block_size: usize) -> usize {
     po2.max(16)
 }
 
-/// `[lead guard][Page][mid guard][blocks…][end guard]` — C `MI_SECURE` / `MI_SECURE=FULL`.
+/// `[lead guard][Page][mid guard][blocks…][end guard]` - C `MI_SECURE` / `MI_SECURE=FULL`.
 fn meta_prefix(block_align: usize) -> (usize, usize, usize) {
     let os = os::page_size();
     let lead = os;

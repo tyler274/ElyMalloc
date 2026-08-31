@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Test harness for the Rust mimalloc rewrite (C ABI, WASM, compiler-suite oracle)"
+description = "Test harness: C ABI, wasm, compiler oracle, world/browsers/projects, VMA 3.4"
 
 [lib]
 name = "mimalloc_harness"

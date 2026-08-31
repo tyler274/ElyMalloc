@@ -37,7 +37,7 @@ Validation that must keep passing (see `[.cursor/rules/allocator-validation.mdc]
 - NixOS-world packages (python3, Node.js, KWin/KDE, …) via `mimalloc-harness world`.
 - Firefox / Chromium / Electron via `mimalloc-harness browsers`.
 - Bun and Serde via `mimalloc-harness projects` (bun scratch stays under `/tmp/mimalloc-projects`, not `rust/target`).
-- **VMA 3.4**: `mimalloc-harness vma` — virtual block, 3.4 layout/symbols, Blender GHOST-style fake-Vulkan smoke.
+- **VMA 3.4**: `mimalloc-harness vma` - virtual block, 3.4 layout/symbols, Blender GHOST-style fake-Vulkan smoke.
 
 ## Design choices
 
@@ -48,7 +48,7 @@ Prior art: [rusty_alloc](https://github.com/Remade-With-Rust/rusty_alloc) is a s
 
 ## Target ABI (what “drop-in” means)
 
-**Phase 1 (NixOS preload)** — ELF `libmimalloc.so` / `libmimalloc.so.3`:
+**Phase 1 (NixOS preload)** - ELF `libmimalloc.so` / `libmimalloc.so.3`:
 
 - `malloc`, `free`, `calloc`, `realloc`
 - `posix_memalign`, `aligned_alloc`, `memalign`, `valloc`, `pvalloc`
@@ -59,7 +59,7 @@ Prior art: [rusty_alloc](https://github.com/Remade-With-Rust/rusty_alloc) is a s
 
 C mimalloc no longer exports `strdup` / `reallocarray` / `__libc_*` by default (`-DMI_OVERRIDE_LIBC_EXTRAS=OFF`) so PartitionAlloc is not handed foreign pointers. Browser smokes use that build.
 
-**Phase 2 (linked libmimalloc)** — every `mi_decl_export` in `[include/mimalloc.h](include/mimalloc.h)`. Opaque types may differ internally. Layout-stable public structs/enums must match C:
+**Phase 2 (linked libmimalloc)** - every `mi_decl_export` in `[include/mimalloc.h](include/mimalloc.h)`. Opaque types may differ internally. Layout-stable public structs/enums must match C:
 
 - `mi_option_t` numeric values
 - `mi_heap_area_t`
@@ -108,13 +108,15 @@ Each page has a **thread-local free list** (no atomics) and a **concurrent free 
 
 Cargo workspace under `[rust/](rust/)` (C tree stays at repo root):
 
-- `[rust/crates/mimalloc-core](rust/crates/mimalloc-core)` — allocator internals (`no_std`)
-- `[rust/crates/mimalloc-c](rust/crates/mimalloc-c)` — `cdylib` + `staticlib`; `#[no_mangle] extern "C"`; GNU `--defsym` aliases
-- `[rust/crates/mimalloc-harness](rust/crates/mimalloc-harness)` — oracle, world, browsers, projects, VMA
-- `[rust/crates/vma-core](rust/crates/vma-core)` / `[vma-c](rust/crates/vma-c)` — AMD VMA **3.4** C ABI
+- `[rust/crates/mimalloc-core](rust/crates/mimalloc-core)` - allocator internals (`no_std`)
+- `[rust/crates/mimalloc-c](rust/crates/mimalloc-c)` - `cdylib` + `staticlib`; `#[no_mangle] extern "C"`; GNU `--defsym` aliases
+- `[rust/crates/mimalloc-harness](rust/crates/mimalloc-harness)` - oracle, world, browsers, projects, VMA
+- `[rust/crates/vma-core](rust/crates/vma-core)` / `[vma-c](rust/crates/vma-c)` - AMD VMA **3.4** C ABI
 - `[rust/package.nix](rust/package.nix)` + `[flake.nix](flake.nix)` overlay → `pkgs.mimalloc`
 
 `mimalloc-core` also implements `GlobalAlloc` (`Mimalloc`) for wasm and Rust programs.
+
+Crate rustdocs (`//!` module docs, `///` on public items) are the per-module source of truth. `[rust/README.md](rust/README.md)` is the operator map.
 
 ## Vulkan Memory Allocator (3.4)
 

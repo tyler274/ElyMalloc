@@ -18,6 +18,7 @@ use std::sync::Mutex;
 const DEFAULT_LARGE_BLOCK: u64 = 256 * 1024 * 1024;
 const LARGE_HEAP: u64 = 1024 * 1024 * 1024;
 
+/// One `VkDeviceMemory` with a coalescing free-list of unused ranges.
 pub struct Block {
     pub memory: VkDeviceMemory,
     pub size: u64,
@@ -27,6 +28,7 @@ pub struct Block {
     pub type_index: u32,
 }
 
+/// Subregion of a [`Block`], or a dedicated `VkDeviceMemory`.
 pub struct Allocation {
     pub memory: VkDeviceMemory,
     pub offset: u64,
@@ -41,6 +43,7 @@ pub struct Allocation {
     pub mapped: *mut c_void,
 }
 
+/// Custom pool (`vmaCreatePool`): own blocks and allocations.
 pub struct Pool {
     pub create: VmaPoolCreateInfo,
     pub name: Option<std::ffi::CString>,
@@ -48,11 +51,13 @@ pub struct Pool {
     pub allocations: Vec<*mut Allocation>,
 }
 
+/// Defragmentation context. This rewrite reports no moves; the C ABI is present.
 pub struct Defrag {
     pub moves: Vec<VmaDefragmentationMove>,
     pub stats: VmaDefragmentationStats,
 }
 
+/// GPU heap manager for one `VkDevice` (default pools + custom pools).
 pub struct Allocator {
     pub flags: u32,
     pub instance: VkInstance,

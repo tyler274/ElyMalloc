@@ -4,6 +4,9 @@
 //! and `mi_*` semantics. Security mitigations that C gates behind `MI_SECURE`
 //! (encoded free lists, guard pages, overflow/double-free checks) are always on.
 //!
+//! The C ABI lives in `mimalloc-c`. This crate is also a
+//! [`core::alloc::GlobalAlloc`] ([`Mimalloc`]) for `wasm32` and Rust programs.
+//!
 //! # Layout
 //!
 //! | Type | C | Role |
@@ -16,6 +19,19 @@
 //!
 //! `free` of a pointer from any thread is allowed. Allocation and
 //! `realloc` of a given theap must run on the thread that owns it.
+//!
+//! # Modules
+//!
+//! | Module | Role |
+//! |--------|------|
+//! | [`alloc`] | `malloc` / `free` / POSIX; bootstrap bump during TLS init |
+//! | `heap` | Theaps, first-class heaps, visit/collect |
+//! | [`arena`] | Exclusive OS reservations |
+//! | [`options`] | `mi_option_t` + `MIMALLOC_*` env |
+//! | [`stats`] | `mi_stats_t` (`MI_STAT_VERSION` 5) |
+//! | [`subproc`] | Heap grouping (`mi_subproc_*`) |
+//! | [`hooks`] | Deferred-free and error callbacks |
+//! | [`global`] | [`Mimalloc`] `GlobalAlloc` |
 //!
 //! # Invariants
 //!
@@ -31,6 +47,12 @@
 //!   so `usable_size` is byte-precise and overflow/double-free is detectable.
 //! - `malloc(n)` returns at least [`MAX_ALIGN_SIZE`] (16) aligned. Requests
 //!   larger than [`MAX_ALLOC`] (`PTRDIFF_MAX`) fail with `ENOMEM`.
+//!
+//! # Safety
+//!
+//! Allocation functions return uninitialized memory (except `calloc` /
+//! zeroing variants). The caller must not read the padding trailer.
+//! `free` / `realloc` require a pointer from this allocator or null.
 
 #![no_std]
 #![allow(clippy::missing_safety_doc)]

@@ -1,3 +1,5 @@
+//! Default harness: unit tests, C ABI (plain + secure SONAME), wasm smoke.
+
 use anyhow::Result;
 
 use crate::env_is_one;

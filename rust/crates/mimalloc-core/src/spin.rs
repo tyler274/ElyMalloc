@@ -9,17 +9,20 @@ pub struct SpinLock {
     locked: AtomicBool,
 }
 
+/// Guard; unlocks on drop.
 pub struct SpinGuard<'a> {
     lock: &'a SpinLock,
 }
 
 impl SpinLock {
+    /// Unlocked lock for `static` metadata.
     pub const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
         }
     }
 
+    /// Spin until acquired. Must not allocate while held.
     #[inline]
     pub fn lock(&self) -> SpinGuard<'_> {
         let mut spins = 0u32;

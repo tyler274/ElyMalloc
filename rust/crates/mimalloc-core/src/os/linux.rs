@@ -139,7 +139,7 @@ fn errno_location() -> *mut i32 {
     unsafe { libc::__errno_location() }
 }
 
-/// `mprotect(PROT_NONE)` — used for lead/mid/end guards and sampled guarded allocs.
+/// `mprotect(PROT_NONE)` - used for lead/mid/end guards and sampled guarded allocs.
 pub unsafe fn protect(p: *mut u8, size: usize) -> bool {
     if p.is_null() || size == 0 {
         return true;

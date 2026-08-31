@@ -1,4 +1,7 @@
-//! Which GCC torture / rustc UI files the harness should try to compile and run.
+//! Which GCC torture / rustc UI files the harness should compile and run.
+//!
+//! Skip lists avoid cases that already fail on system malloc so only allocator
+//! regressions count.
 
 /// Skip DejaGNU glue and files that need extra sources / trap.
 pub fn skip_c_torture_source(src: &str) -> bool {

@@ -1,13 +1,13 @@
 ---
-description: Remaining drop-in allocator validation
+description: Keep-passing drop-in allocator validation
 alwaysApply: true
 ---
 
-# Allocator validation backlog
+# Allocator validation (keep passing)
 
-When continuing the Rust mimalloc rewrite, keep this on the backlog until done:
+These are not a backlog of unimplemented work. Suites that already exist must **keep passing** when changing the rewrite:
 
-- Compiler-suite **rustc** must be compared against **C mimalloc and stock jemalloc**, not only C mimalloc.
+- Compiler-suite **rustc** is compared against **C mimalloc and stock jemalloc**, not only C mimalloc.
 - Those rustc (and GCC/Clang) suite cases must **run** under `LD_PRELOAD` and match the system malloc's **stdout, stderr, and exit code**. Compile/link success is not a substitute.
 - Keep musl Linux working.
 
