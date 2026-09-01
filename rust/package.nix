@@ -22,7 +22,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "mimalloc";
-  version = "3.5.0";
+  version = "3.5.1";
 
   # Cargo workspace only. `src = ./.` would include gitignored `target/` when
   # a consumer uses `path:` (that input type copies the working tree, ~4GiB).
@@ -202,7 +202,7 @@ includedir=''${prefix}/include
 
 Name: mimalloc
 Description: Pure-Rust mimalloc rewrite
-Version: 3.5.0
+Version: 3.5.1
 Libs: -L''${libdir} -lmimalloc-secure
 Cflags: -I''${includedir}
 EOF

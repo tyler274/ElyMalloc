@@ -13,7 +13,7 @@ members = [
 default-members = ["crates/mimalloc-core", "crates/mimalloc-c"]
 
 [workspace.package]
-version = "3.5.0"
+version = "3.5.1"
 edition = "2021"
 license = "MIT"
 authors = ["mimalloc contributors"]

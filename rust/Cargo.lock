@@ -213,14 +213,14 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mimalloc-alloc-stress"
-version = "3.5.0"
+version = "3.5.1"
 dependencies = [
  "mimalloc-core",
 ]
 
 [[package]]
 name = "mimalloc-bench"
-version = "3.5.0"
+version = "3.5.1"
 dependencies = [
  "libc",
  "mimalloc-core",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-c"
-version = "3.5.0"
+version = "3.5.1"
 dependencies = [
  "libc",
  "mimalloc-core",
@@ -236,14 +236,14 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-core"
-version = "3.5.0"
+version = "3.5.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "mimalloc-harness"
-version = "3.5.0"
+version = "3.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-wasm-smoke"
-version = "3.5.0"
+version = "3.5.1"
 dependencies = [
  "mimalloc-core",
 ]

@@ -1,6 +1,6 @@
 //! Pure-Rust mimalloc core (`no_std`, no `alloc` crate).
 //!
-//! Drop-in for C mimalloc **v3.5.0**: same size classes, page sizes, padding,
+//! Drop-in for C mimalloc **v3.5.1**: same size classes, page sizes, padding,
 //! and `mi_*` semantics. Security mitigations that C gates behind `MI_SECURE`
 //! (encoded free lists, guard pages, overflow/double-free checks) are always on.
 //!
@@ -98,8 +98,8 @@ pub const MAX_ALLOC: usize = isize::MAX as usize;
 pub const MAX_ALIGN_SIZE: usize = 16;
 /// 8-byte `{canary, delta}` trailer at the end of every block (C `MI_PADDING`).
 pub const PADDING_SIZE: usize = 8;
-/// Packed as `major*10000 + minor*100 + patch` (C `MI_MALLOC_VERSION` for 3.5.0).
-pub const MI_MALLOC_VERSION: i32 = 30500;
+/// Packed as `major*10000 + minor*100 + patch` (C `MI_MALLOC_VERSION` for 3.5.1).
+pub const MI_MALLOC_VERSION: i32 = 30501;
 
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 static INIT_LOCK: spin::SpinLock = spin::SpinLock::new();
@@ -196,6 +196,19 @@ mod tests {
             assert_eq!(*p, 0xAB);
             alloc::free(p);
         }
+    }
+
+    #[test]
+    fn version_matches_c_3_5_1() {
+        assert_eq!(super::MI_MALLOC_VERSION, 30501);
+        assert_eq!(alloc::VERSION, 30501);
+    }
+
+    #[test]
+    fn allow_thp_defaults_to_full() {
+        super::init();
+        assert_eq!(super::options::get(43), 2);
+        assert_eq!(super::os::min_purge_size(), 2 * 1024 * 1024);
     }
 
     #[test]
@@ -1130,7 +1143,10 @@ mod tests {
             let mut v = Vec::with_capacity(N);
             for _ in 0..N {
                 let p = alloc::malloc(32);
-                assert!(!p.is_null(), "realloc after cross-thread free returned null");
+                assert!(
+                    !p.is_null(),
+                    "realloc after cross-thread free returned null"
+                );
                 v.push(p);
             }
             for p in v {

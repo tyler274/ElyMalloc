@@ -72,3 +72,16 @@ pub use linux::*;
 mod wasm;
 #[cfg(target_arch = "wasm32")]
 pub use wasm::*;
+
+/// C `_mi_os_minimal_purge_size`. `allow_thp==2` (FULL) uses 2 MiB so
+/// `MADV_DONTNEED` does not split transparent huge pages.
+pub fn min_purge_size() -> usize {
+    let explicit = crate::options::get_size(44);
+    if explicit != 0 {
+        crate::align_up(explicit, page_size())
+    } else if crate::options::get(43) == 2 {
+        2 * 1024 * 1024
+    } else {
+        page_size()
+    }
+}

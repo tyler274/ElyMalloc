@@ -369,7 +369,8 @@ pub unsafe fn collect(force: bool) {
 pub const SMALL_SIZE_MAX: usize = 128 * PTR_SIZE;
 
 /// Size-hinted free. Reports `EINVAL` if `size` is larger than the usable
-/// size (C debug `mi_free_size`), then still frees.
+/// size (C debug `mi_free_size`), then still frees. Guarded blocks skip the
+/// size checks (C v3.5.1: a sampled guard may over-size a small request).
 pub unsafe fn free_size(p: *mut u8, size: usize) {
     if p.is_null() {
         return;
@@ -379,13 +380,14 @@ pub unsafe fn free_size(p: *mut u8, size: usize) {
     if page.is_null() || (*page).magic != PAGE_MAGIC {
         return;
     }
+    let guarded = (*page).is_guarded();
     let usable = page::usable_size(page, p);
-    if size > usable {
+    if !guarded && size > usable {
         os::einval();
         free(p);
         return;
     }
-    if size <= SMALL_SIZE_MAX && (*page).block_size > good_size(SMALL_SIZE_MAX) {
+    if !guarded && size <= SMALL_SIZE_MAX && (*page).block_size > good_size(SMALL_SIZE_MAX) {
         os::einval();
         free(p);
         return;
@@ -649,4 +651,4 @@ pub unsafe fn manage_os_memory_ex(
 }
 
 /// Packed version matching [`crate::MI_MALLOC_VERSION`].
-pub const VERSION: i32 = 30500;
+pub const VERSION: i32 = crate::MI_MALLOC_VERSION;

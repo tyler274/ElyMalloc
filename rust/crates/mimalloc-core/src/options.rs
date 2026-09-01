@@ -77,7 +77,7 @@ pub fn init() {
     set(36, 2); // page_full_retain
     set(37, 4); // page_max_candidates
     set(42, 16); // page_cross_thread_max_reclaim
-    set(43, 1); // allow_thp
+    set(43, 2); // allow_thp FULL (C Linux default: never split THP on purge)
     apply_env();
 }
 

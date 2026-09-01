@@ -1295,7 +1295,9 @@ pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
                 page::destroy(page);
             } else if (*page).used == 0 {
                 let n = ((*page).capacity as usize).saturating_mul((*page).block_size);
-                os::madvise_dontneed((*page).area, n);
+                if n >= os::min_purge_size() {
+                    os::madvise_dontneed((*page).area, n);
+                }
             }
             page = next;
         }

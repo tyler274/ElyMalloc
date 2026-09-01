@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "mimalloc.h"
 #include "mimalloc-stats.h"
 
@@ -130,6 +131,27 @@ int main(void) {
     if (mi_stats_get_json(sizeof(jbuf), jbuf) == NULL) die("stats_get_json");
     if (jbuf[0] != '{') die("stats json");
     if (mi_stats_get_bin_size(1) < sizeof(void*)) die("stats_get_bin_size");
+  }
+
+  {
+    if (mi_version() != MI_MALLOC_VERSION || mi_version() != 30501) die("mi_version");
+    mi_theap_t* theap = mi_theap_get_default();
+    size_t zsize = MI_SMALL_SIZE_MAX + 64;
+    uint8_t* junk = (uint8_t*)mi_theap_malloc(theap, zsize);
+    if (junk == NULL) die("zalloc_csize junk");
+    memset(junk, 0xAB, zsize);
+    mi_free(junk);
+    uint8_t* z = (uint8_t*)mi_theap_zalloc_csize(theap, zsize);
+    if (z == NULL) die("zalloc_csize large");
+    for (size_t i = 0; i < zsize; i++) {
+      if (z[i] != 0) die("zalloc_csize large not zero");
+    }
+    mi_free(z);
+
+    int* small = (int*)mi_zalloc_small(sizeof(int) * 4);
+    if (small == NULL) die("zalloc_small");
+    small[3] = 42;
+    mi_free_small_nonnull(small);
   }
 
   if (mi_heap_main() == NULL) die("heap_main");

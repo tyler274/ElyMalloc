@@ -164,6 +164,11 @@ pub unsafe extern "C" fn mi_free_small(p: *mut c_void) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mi_free_small_nonnull(p: *mut c_void) {
+    mi_free(p);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mi_malloc_aligned(size: usize, alignment: usize) -> *mut c_void {
     pvoid(mi::malloc_aligned(size, alignment))
 }

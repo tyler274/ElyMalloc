@@ -1,6 +1,6 @@
 # Rust mimalloc rewrite
 
-Pure-Rust allocator with a C ABI intended as a drop-in replacement for C mimalloc **v3.5.0**, plus a pure-Rust AMD VMA **3.4** drop-in.
+Pure-Rust allocator with a C ABI intended as a drop-in replacement for C mimalloc **v3.5.1**, plus a pure-Rust AMD VMA **3.4** drop-in.
 
 Crate rustdocs (`//!` / `///`) are the per-module source of truth. This README is the operator map (build, NixOS, harness).
 
