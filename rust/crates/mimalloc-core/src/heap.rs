@@ -270,6 +270,23 @@ unsafe fn reclaim_abandoned(h: *mut ThreadHeap, bin: usize) -> *mut Page {
     if (*h).in_threadpool {
         return ptr::null_mut();
     }
+    // A full abandoned page (live objects, empty `local_free`) must still be
+    // bound to this heap so later `free`s work. It must not be treated as a
+    // fresh page: `malloc_bin` used to `ENOMEM` on `pop_local` null (NixOS
+    // checkPhase / Jackett thread-pool churn).
+    for _ in 0..64 {
+        let taken = take_one_abandoned(h, bin);
+        if taken.is_null() {
+            return ptr::null_mut();
+        }
+        if !(*taken).local_free.is_null() {
+            return taken;
+        }
+    }
+    ptr::null_mut()
+}
+
+unsafe fn take_one_abandoned(h: *mut ThreadHeap, bin: usize) -> *mut Page {
     let page = abandoned(bin).swap(ptr::null_mut(), Ordering::AcqRel);
     if page.is_null() {
         return ptr::null_mut();
@@ -356,10 +373,12 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
         }
     }
     maybe_deferred_free(h);
-    // Try other owned pages of this bin.
+    // Collect `thread_free` on every owned page. Stopping after 8 left
+    // cross-thread frees stranded (.NET / KWin) so we kept mmap'ing until
+    // `nothrow new` returned null (NixOS gen 51 KWin LLVM OOM, Jackett exit 1).
     page = (*h).lists[bin];
-    let mut n = 0;
-    while !page.is_null() && n < 8 {
+    let mut n = 0u32;
+    while !page.is_null() {
         page::collect(page);
         let p = page::pop_local(page);
         if !p.is_null() {
@@ -369,7 +388,10 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
             return p;
         }
         page = (*page).next;
-        n += 1;
+        n = n.wrapping_add(1);
+        if n > 1_000_000 {
+            break;
+        }
     }
     page = new_page(h, bin, block_size);
     if page.is_null() {
@@ -379,11 +401,32 @@ pub unsafe fn malloc_bin(h: *mut ThreadHeap, bin: usize) -> *mut u8 {
     (*h).current[bin] = page;
     let p = page::pop_local(page);
     if p.is_null() {
-        os::enomem();
-    } else {
+        // Reclaim bound a full page; `new_page` should have created a fresh
+        // one, but if `pop_local` is still empty, map another.
+        let fresh = {
+            let map_size = bin::page_size_for_block(block_size);
+            page::create(block_size, map_size, (*h).arena)
+        };
+        if fresh.is_null() {
+            os::enomem();
+            return ptr::null_mut();
+        }
+        (*fresh).heap.store(h, Ordering::Release);
+        (*fresh).subproc = (*h).subproc;
+        (*h).stats.add_page();
+        list_push(&mut (*h).lists[bin], fresh);
+        (*h).current[bin] = fresh;
+        let p = page::pop_local(fresh);
+        if p.is_null() {
+            os::enomem();
+            return ptr::null_mut();
+        }
         crate::stats::malloc_add(block_size);
         (*h).stats.add_malloc(block_size);
+        return p;
     }
+    crate::stats::malloc_add(block_size);
+    (*h).stats.add_malloc(block_size);
     p
 }
 

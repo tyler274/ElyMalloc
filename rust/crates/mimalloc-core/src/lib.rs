@@ -805,23 +805,17 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn metadata_guard_page_is_inaccessible() {
+    fn metadata_sits_in_the_rw_mapping() {
         unsafe {
             let p = alloc::malloc(32);
             assert!(!p.is_null());
             let page = crate::page_map::get(p);
             assert!(!page.is_null());
             let base = (*page).map_base as usize;
-            let os = crate::os::page_size();
-            let guard = prot_at(base).expect("map_base in maps");
+            let hdr = prot_at(base).expect("map_base in maps");
             assert!(
-                !guard.contains('r') && !guard.contains('w'),
-                "leading meta guard should be PROT_NONE, got {guard}"
-            );
-            let meta = prot_at(base + os).expect("page header in maps");
-            assert!(
-                meta.contains('r') && meta.contains('w'),
-                "page header should be RW, got {meta}"
+                hdr.contains('r') && hdr.contains('w'),
+                "page header should be RW (no lead mprotect), got {hdr}"
             );
             alloc::free(p);
         }
@@ -1071,6 +1065,50 @@ mod tests {
         }
         for j in joins {
             j.join().expect("worker panicked");
+        }
+    }
+
+    /// More than 8 pages of one size class, freed from another thread.
+    /// `malloc_bin` used to stop collecting after 8 pages and mmap until null.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cross_thread_free_reclaims_more_than_eight_pages() {
+        use std::sync::mpsc;
+        use std::thread;
+        const N: usize = 24_000;
+        let (tx, rx) = mpsc::channel::<usize>();
+        let producer = thread::spawn(move || unsafe {
+            let mut v = Vec::with_capacity(N);
+            for _ in 0..N {
+                let p = alloc::malloc(32);
+                assert!(!p.is_null(), "fill malloc returned null");
+                core::ptr::write(p, 0x5Au8);
+                v.push(p as usize);
+            }
+            for p in v {
+                tx.send(p).unwrap();
+            }
+        });
+        let consumer = thread::spawn(move || unsafe {
+            let mut n = 0usize;
+            while n < N {
+                let p = rx.recv().expect("ptr") as *mut u8;
+                alloc::free(p);
+                n += 1;
+            }
+        });
+        producer.join().expect("producer panicked");
+        consumer.join().expect("consumer panicked");
+        unsafe {
+            let mut v = Vec::with_capacity(N);
+            for _ in 0..N {
+                let p = alloc::malloc(32);
+                assert!(!p.is_null(), "realloc after cross-thread free returned null");
+                v.push(p);
+            }
+            for p in v {
+                alloc::free(p);
+            }
         }
     }
 }

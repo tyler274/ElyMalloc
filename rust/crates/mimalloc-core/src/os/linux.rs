@@ -272,6 +272,7 @@ unsafe fn recycle_slice(p: *mut u8, size: usize) -> bool {
     let Some(head) = free_head_for(size) else {
         return true;
     };
+    let _g = SEG_LOCK.lock();
     push_free(head, p);
     true
 }
@@ -324,13 +325,6 @@ unsafe fn new_segment() -> *mut Seg {
 unsafe fn segment_try_alloc(size: usize, align: usize) -> Option<*mut u8> {
     if size > MEDIUM_PAGE_SIZE || align > SLICE_SIZE || size % SLICE_SIZE != 0 {
         return None;
-    }
-    if let Some(head) = free_head_for(size) {
-        let p = pop_free(head);
-        if !p.is_null() {
-            ptr::write_bytes(p, 0, core::mem::size_of::<*mut u8>());
-            return Some(p);
-        }
     }
     let _g = SEG_LOCK.lock();
     if let Some(head) = free_head_for(size) {
