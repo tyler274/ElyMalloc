@@ -133,7 +133,7 @@ fn write_preload_file(work: &Path, so: Option<&Path>) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn run_under_alloc(
+pub(crate) fn run_under_alloc(
     so: Option<&Path>,
     work: &Path,
     program: &Path,
@@ -220,7 +220,7 @@ fn run_under_alloc(
     run_captured_os(program, args, &env, timeout, Some(cwd), &remove)
 }
 
-fn git_sparse(dir: &Path, url: &str, cones: &[&str], refs: &[&str]) -> Result<()> {
+pub(crate) fn git_sparse(dir: &Path, url: &str, cones: &[&str], refs: &[&str]) -> Result<()> {
     let _ = fs::remove_dir_all(dir);
     fs::create_dir_all(dir)?;
     Command::new("git")

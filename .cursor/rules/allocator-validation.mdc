@@ -17,6 +17,8 @@ NixOS-world packages from `/etc/nixos` are covered by `mimalloc-harness world` /
 
 Bun (`https://github.com/oven-sh/bun/` testsuite) and Serde (`serde-rs/serde` `cargo test --workspace`) are covered by `mimalloc-harness projects` / `rust/tests/projects.sh`. Suites must **run** under rewrite, C mimalloc, and libc. Compile/link success is not a substitute. Rewrite-only mismatches vs libc FAIL.
 
+CPython (`https://github.com/python/cpython` regrtest) is covered by `mimalloc-harness python` / `rust/tests/python.sh`: clone matching `Lib/test`, and **run** `python3 -m test` under rewrite, C mimalloc, and libc. World `python3:stdlib-slice` is not a substitute. Rewrite-only mismatches FAIL.
+
 Leptos (`https://github.com/leptos-rs/leptos`) is covered by `mimalloc-harness leptos` / `rust/tests/leptos.sh`: inject `mimalloc_core::Mimalloc` as `#[global_allocator]` and **run** `cargo test --lib --target wasm32-wasip1` (wasmtime) for `reactive_graph` and the other WASI-safe member crates, plus in-tree `mimalloc-leptos-smoke`. Compile/link success is not a substitute.
 
 Vulkan Memory Allocator is AMD VMA **3.4** (`libVulkanMemoryAllocator.so.3`). Cover `minAlignment`, dedicated allocate/create (`pMemoryAllocateNext`), and `VmaVulkanFunctions::vkGetPhysicalDeviceProperties2KHR`. Device tests use fake Vulkan (no GPU). Include a Blender GHOST / OpenXR-style smoke (Vulkan 1.2, buffer device address, mapped sequential-write buffers, GPU-only images, pools, stats/budgets/defrag) in `vma-core` and `mimalloc-harness vma` (`rust/tests/vma-blender.c`). Virtual-block and 3.4 layout smokes stay required.

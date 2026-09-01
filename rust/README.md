@@ -169,6 +169,17 @@ cd rust
 # PROJECTS=bun|serde|all  BUN_FULL=1  BUN_TEST='test/js/web/encoding'  BUN_SRC=  SERDE_SRC=
 ```
 
+### CPython regrtest
+
+[CPython](https://github.com/python/cpython) `Lib/test` is a real allocator workout (containers, bytes, GC, threads, pickle). NixOS `python3` ships a stub `test` package, so the harness clones matching `Lib/test` and **runs** `python3 -m test` under the rewrite, C mimalloc, and libc. PASS means regrtest result / run / fail / skip / file counts match libc. Rewrite-only mismatches are FAIL. World `python3:stdlib-slice` is a smoke, not this suite.
+
+```
+cd rust
+./tests/python.sh
+# or: cargo run -p mimalloc-harness -- python
+# PYTHON3=  CPYTHON_SRC=  CPYTHON_REFRESH=1  CPYTHON_FULL=1  CPYTHON_TEST='test_list test_dict'
+```
+
 ### Live system
 
 **Session (does not switch the OS).** This host already preloads C mimalloc via `/etc/ld-nix.so.preload`. Stacking that with another `LD_PRELOAD` is two allocators. `nix run .#live` hides the preload in a mount namespace (bubblewrap) and then preloads the rewrite:

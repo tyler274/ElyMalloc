@@ -15,6 +15,7 @@
 //! | [`mod@bench`] | `bench` |
 //! | [`world`] | `world` |
 //! | [`projects`] | `projects` (Bun, Serde) |
+//! | [`python`] | `python` (CPython regrtest) |
 //! | [`leptos`] | `leptos` (Leptos WASM suites) |
 //! | [`vma`] | `vma` (AMD VMA 3.4) |
 //! | [`browsers`] | `browsers` |
@@ -34,6 +35,7 @@ pub mod oracle;
 pub mod preload;
 pub mod process;
 pub mod projects;
+pub mod python;
 pub mod run;
 pub mod vma;
 pub mod wasm;
