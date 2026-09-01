@@ -80,7 +80,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Pointer / word size (`MI_INTPTR_SIZE`).
 pub const PTR_SIZE: usize = core::mem::size_of::<usize>();
-/// Arena slice is 64 KiB (`MI_ARENA_SLICE_SHIFT`). Page-map key and page alignment.
+/// Arena slice shift (`MI_ARENA_SLICE_SHIFT`). 128 KiB on Apple silicon so
+/// 16 KiB guard pages are not most of a 64 KiB slice (C secure + arm64 macOS).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const SLICE_SHIFT: usize = 17;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 pub const SLICE_SHIFT: usize = 16;
 /// `MI_SMALL_PAGE_SIZE` / `MI_ARENA_SLICE_SIZE`.
 pub const SLICE_SIZE: usize = 1 << SLICE_SHIFT;
@@ -129,7 +133,7 @@ pub fn init() {
     if INIT_DONE.load(Ordering::Acquire) {
         return;
     }
-    let me = os::gettid();
+    let me = os::thread_id();
     tls::INIT_OWNER.store(me, Ordering::Release);
     tls::BOOTSTRAP_TID.store(me, Ordering::Release);
     tls::IN_BOOTSTRAP.store(true, Ordering::Release);
@@ -148,7 +152,7 @@ pub fn init() {
 ///
 /// # Safety
 /// Must run only from the `pthread_atfork` child handler, before other threads exist.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub(crate) unsafe fn fork_child() {
     INIT_LOCK.force_unlock();
     tls::force_unlock();
@@ -205,10 +209,25 @@ mod tests {
     }
 
     #[test]
+    fn va_bits_are_in_page_map_range() {
+        super::init();
+        let bits = super::os::va_bits();
+        assert!(bits >= 32, "va_bits={bits}");
+        assert!(bits <= 57, "va_bits={bits}");
+    }
+
+    #[test]
     fn allow_thp_defaults_to_full() {
         super::init();
-        assert_eq!(super::options::get(43), 2);
-        assert_eq!(super::os::min_purge_size(), 2 * 1024 * 1024);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(super::options::get(43), 2);
+            assert_eq!(super::os::min_purge_size(), 2 * 1024 * 1024);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert_eq!(super::options::get(43), 0);
+        }
     }
 
     #[test]

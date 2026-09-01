@@ -465,8 +465,7 @@ pub unsafe fn create_huge(
     // at a time) can stay in-place instead of mmap+copy+munmap each call.
     let need = size.max(16);
     let payload = align_up(
-        need
-            .checked_next_power_of_two()
+        need.checked_next_power_of_two()
             .unwrap_or(need)
             .max(SLICE_SIZE),
         SLICE_SIZE,
@@ -587,6 +586,7 @@ pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
         (*page).local_free = ptr::null_mut();
         (*page).used = 1;
         let p = (*page).area;
+        os::reuse(p, (*page).block_size);
         clear_block_next(p);
         return p;
     }
@@ -597,6 +597,10 @@ pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
     (*page).local_free = block_next(page, b);
     (*page).used = (*page).used.saturating_add(1);
     let p = b as *mut u8;
+    if (*page).used == 1 {
+        let n = ((*page).capacity as usize).saturating_mul((*page).block_size);
+        os::reuse((*page).area, n);
+    }
     clear_block_next(p);
     debug_fill(
         p,

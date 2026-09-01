@@ -9,8 +9,16 @@ description = "no_std mimalloc v3.5.1 core (size classes, pages, heaps; always-o
 default = []
 debug-fill = []
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+] }
 
 [lib]
 name = "mimalloc_core"

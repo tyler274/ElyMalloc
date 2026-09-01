@@ -77,17 +77,22 @@ pub fn init() {
     set(36, 2); // page_full_retain
     set(37, 4); // page_max_candidates
     set(42, 16); // page_cross_thread_max_reclaim
+    #[cfg(target_os = "linux")]
     set(43, 2); // allow_thp FULL (C Linux default: never split THP on purge)
+    #[cfg(not(target_os = "linux"))]
+    set(43, 0);
     apply_env();
 }
 
 fn apply_env() {
-    #[cfg(not(target_arch = "wasm32"))]
-    apply_env_linux();
+    #[cfg(unix)]
+    apply_env_unix();
+    #[cfg(windows)]
+    apply_env_windows();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_env_linux() {
+#[cfg(unix)]
+fn apply_env_unix() {
     for (i, name) in NAMES.iter().enumerate() {
         let mut key = [0u8; 80];
         let prefix = b"mimalloc_";
@@ -101,22 +106,48 @@ fn apply_env_linux() {
             if v.is_null() {
                 continue;
             }
-            if let Some(n) = parse_env(v) {
+            if let Some(n) =
+                parse_env_bytes(core::slice::from_raw_parts(v as *const u8, libc::strlen(v)))
+            {
                 set(i as i32, n);
             }
         }
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn parse_env(s: *const libc::c_char) -> Option<i64> {
-    let n = libc::strlen(s);
-    if n == 0 {
+#[cfg(windows)]
+fn apply_env_windows() {
+    unsafe extern "C" {
+        fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char;
+        fn strlen(s: *const core::ffi::c_char) -> usize;
+    }
+    for (i, name) in NAMES.iter().enumerate() {
+        let mut key = [0u8; 80];
+        let prefix = b"mimalloc_";
+        if prefix.len() + name.len() + 1 > key.len() {
+            continue;
+        }
+        key[..prefix.len()].copy_from_slice(prefix);
+        key[prefix.len()..prefix.len() + name.len()].copy_from_slice(name.as_bytes());
+        unsafe {
+            let v = getenv(key.as_ptr() as *const core::ffi::c_char);
+            if v.is_null() {
+                continue;
+            }
+            if let Some(n) = parse_env_bytes(core::slice::from_raw_parts(v as *const u8, strlen(v)))
+            {
+                set(i as i32, n);
+            }
+        }
+    }
+}
+
+fn parse_env_bytes(bytes: &[u8]) -> Option<i64> {
+    if bytes.is_empty() {
         return Some(1);
     }
-    let bytes = core::slice::from_raw_parts(s as *const u8, n);
     let mut tmp = [0u8; 64];
-    let len = n.min(tmp.len());
+    let len = bytes.len().min(tmp.len());
     for i in 0..len {
         tmp[i] = bytes[i].to_ascii_uppercase();
     }

@@ -1,0 +1,112 @@
+# Rewrite (Rust mimalloc) — does not replace C `test.yaml`.
+name: Rewrite
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "rust/**"
+      - ".github/workflows/rewrite.yaml"
+      - "include/**"
+      - "test/**"
+  pull_request:
+    paths:
+      - "rust/**"
+      - ".github/workflows/rewrite.yaml"
+      - "include/**"
+      - "test/**"
+
+concurrency:
+  group: rewrite-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-x64:
+    name: Linux x86_64 (core + c-abi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tests
+        working-directory: rust
+        run: |
+          cargo test -p mimalloc-core --release
+          cargo build --release -p mimalloc-c
+          cargo run -p mimalloc-harness -- c-abi
+
+  linux-aarch64:
+    name: Linux aarch64 gnu/musl (qemu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl
+      - name: Cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user
+      - name: Core tests, gnu cdylib, musl check
+        working-directory: rust
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo test -p mimalloc-core --release --target aarch64-unknown-linux-gnu
+          cargo build --release -p mimalloc-c --target aarch64-unknown-linux-gnu
+          cargo check -p mimalloc-core --target aarch64-unknown-linux-musl
+          cargo build --release -p mimalloc-c --target aarch64-unknown-linux-musl || \
+            cargo check -p mimalloc-c --target aarch64-unknown-linux-musl
+          aarch64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-aarch64
+          qemu-aarch64 -L /usr/aarch64-linux-gnu \
+            -E LD_PRELOAD="$PWD/target/aarch64-unknown-linux-gnu/release/libmimalloc.so" \
+            /tmp/mi-smoke-aarch64
+
+  linux-riscv64:
+    name: Linux riscv64 (qemu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+      - name: Cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-linux-gnu qemu-user
+      - name: Core tests + c-abi smoke
+        working-directory: rust
+        env:
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUNNER: qemu-riscv64
+        run: |
+          cargo test -p mimalloc-core --release --target riscv64gc-unknown-linux-gnu
+          cargo build --release -p mimalloc-c --target riscv64gc-unknown-linux-gnu
+          riscv64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-riscv
+          qemu-riscv64 -L /usr/riscv64-linux-gnu \
+            -E LD_PRELOAD="$PWD/target/riscv64gc-unknown-linux-gnu/release/libmimalloc.so" \
+            /tmp/mi-smoke-riscv
+
+  macos-arm64:
+    name: macOS arm64 (core + c-abi)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tests
+        working-directory: rust
+        run: |
+          cargo test -p mimalloc-core --release
+          cargo build --release -p mimalloc-c
+          cargo run -p mimalloc-harness -- c-abi
+
+  windows-x64:
+    name: Windows x64 (core + dll smoke)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tests
+        working-directory: rust
+        shell: bash
+        run: |
+          cargo test -p mimalloc-core --release
+          cargo build --release -p mimalloc-c
+          cargo run -p mimalloc-harness -- c-abi

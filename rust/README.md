@@ -23,7 +23,7 @@ cargo build --release -p mimalloc-c
 
 This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `cargo build --release -p mimalloc-c --features secure` produces the same mitigations with SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). The harness copies that to `target/release/libmimalloc-secure.so`.
 
-`cargo check` is clean for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, and `wasm32-unknown-unknown`. Musl cannot emit a `cdylib` unless `-C target-feature=-crt-static` is set (see `.cargo/config.toml`); `c_char` is `u8` on ARM, so path buffers use `libc::c_char` rather than `i8`.
+`cargo check` is clean for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-{gnu,musl}`, `riscv64gc-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, and `wasm32-unknown-unknown`. GitHub Actions workflow `rewrite.yaml` runs those (qemu-user for aarch64/riscv64). Musl cannot emit a `cdylib` unless `-C target-feature=-crt-static` is set (see `.cargo/config.toml`); `c_char` is `u8` on ARM/RISC-V, so path buffers use `libc::c_char` rather than `i8`.
 
 ## Test
 

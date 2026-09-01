@@ -572,7 +572,7 @@ pub unsafe fn realpath(fname: *const c_char, resolved: *mut c_char) -> *mut c_ch
         os::einval();
         return ptr::null_mut();
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(unix)]
     {
         const PATH_MAX: usize = 4096;
         if fname.is_null() {
@@ -588,6 +588,12 @@ pub unsafe fn realpath(fname: *const c_char, resolved: *mut c_char) -> *mut c_ch
             return ptr::null_mut();
         }
         strdup(buf.as_ptr())
+    }
+    #[cfg(windows)]
+    {
+        let _ = (fname, resolved);
+        os::einval();
+        ptr::null_mut()
     }
 }
 

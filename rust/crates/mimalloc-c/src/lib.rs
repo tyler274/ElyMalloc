@@ -52,6 +52,24 @@ fn mimalloc_core_abort() -> ! {
     unsafe { libc::_exit(1) }
 }
 
+unsafe fn set_enomem() {
+    #[cfg(target_os = "linux")]
+    {
+        *libc::__errno_location() = libc::ENOMEM;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        *libc::__error() = libc::ENOMEM;
+    }
+    #[cfg(windows)]
+    {
+        unsafe extern "C" {
+            fn _errno() -> *mut i32;
+        }
+        *_errno() = libc::ENOMEM;
+    }
+}
+
 #[inline]
 fn pvoid(p: *mut u8) -> *mut c_void {
     p as *mut c_void
@@ -78,6 +96,9 @@ unsafe fn emit_cstr(out: *mut c_void, arg: *mut c_void, msg: *const libc::c_char
     };
     if f.is_null() {
         let n = libc::strlen(msg);
+        #[cfg(windows)]
+        libc::write(2, msg as *const c_void, n as u32);
+        #[cfg(not(windows))]
         libc::write(2, msg as *const c_void, n);
     } else {
         let cb: OutputFun = core::mem::transmute(f);
@@ -341,18 +362,24 @@ pub unsafe extern "C" fn mi_reallocarr(ptrp: *mut *mut c_void, count: usize, siz
 const TRY_NEW_MAX: i32 = 4;
 
 type NewHandler = unsafe extern "C" fn();
+#[allow(dead_code)]
 type GetNewHandler = unsafe extern "C" fn() -> Option<NewHandler>;
 
 unsafe fn cxx_get_new_handler() -> Option<NewHandler> {
-    let p = libc::dlsym(
-        libc::RTLD_DEFAULT,
-        b"_ZSt15get_new_handlerv\0".as_ptr() as *const libc::c_char,
-    );
-    if p.is_null() {
-        return None;
+    #[cfg(unix)]
+    {
+        let p = libc::dlsym(
+            libc::RTLD_DEFAULT,
+            b"_ZSt15get_new_handlerv\0".as_ptr() as *const libc::c_char,
+        );
+        if p.is_null() {
+            return None;
+        }
+        let getter: GetNewHandler = core::mem::transmute(p);
+        return getter();
     }
-    let getter: GetNewHandler = core::mem::transmute(p);
-    getter()
+    #[cfg(not(unix))]
+    None
 }
 
 unsafe fn try_new_handler(nothrow: bool) -> bool {
@@ -1198,39 +1225,59 @@ pub unsafe extern "C" fn mi_process_info(
     peak_commit: *mut usize,
     page_faults: *mut usize,
 ) {
-    let mut ru: libc::rusage = core::mem::zeroed();
-    libc::getrusage(libc::RUSAGE_SELF, &mut ru);
-    let user = (ru.ru_utime.tv_sec as usize)
-        .saturating_mul(1000)
-        .saturating_add((ru.ru_utime.tv_usec as usize) / 1000);
-    let sys = (ru.ru_stime.tv_sec as usize)
-        .saturating_mul(1000)
-        .saturating_add((ru.ru_stime.tv_usec as usize) / 1000);
-    let rss = (ru.ru_maxrss as usize).saturating_mul(1024);
-    let faults = ru.ru_majflt as usize;
-    if !elapsed_msecs.is_null() {
-        *elapsed_msecs = user.saturating_add(sys);
+    #[cfg(unix)]
+    {
+        let mut ru: libc::rusage = core::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut ru);
+        let user = (ru.ru_utime.tv_sec as usize)
+            .saturating_mul(1000)
+            .saturating_add((ru.ru_utime.tv_usec as usize) / 1000);
+        let sys = (ru.ru_stime.tv_sec as usize)
+            .saturating_mul(1000)
+            .saturating_add((ru.ru_stime.tv_usec as usize) / 1000);
+        let rss = (ru.ru_maxrss as usize).saturating_mul(1024);
+        let faults = ru.ru_majflt as usize;
+        if !elapsed_msecs.is_null() {
+            *elapsed_msecs = user.saturating_add(sys);
+        }
+        if !user_msecs.is_null() {
+            *user_msecs = user;
+        }
+        if !system_msecs.is_null() {
+            *system_msecs = sys;
+        }
+        if !current_rss.is_null() {
+            *current_rss = rss;
+        }
+        if !peak_rss.is_null() {
+            *peak_rss = rss;
+        }
+        if !current_commit.is_null() {
+            *current_commit = rss;
+        }
+        if !peak_commit.is_null() {
+            *peak_commit = rss;
+        }
+        if !page_faults.is_null() {
+            *page_faults = faults;
+        }
+        return;
     }
-    if !user_msecs.is_null() {
-        *user_msecs = user;
-    }
-    if !system_msecs.is_null() {
-        *system_msecs = sys;
-    }
-    if !current_rss.is_null() {
-        *current_rss = rss;
-    }
-    if !peak_rss.is_null() {
-        *peak_rss = rss;
-    }
-    if !current_commit.is_null() {
-        *current_commit = rss;
-    }
-    if !peak_commit.is_null() {
-        *peak_commit = rss;
-    }
-    if !page_faults.is_null() {
-        *page_faults = faults;
+    #[cfg(not(unix))]
+    {
+        let z = |p: *mut usize| {
+            if !p.is_null() {
+                *p = 0;
+            }
+        };
+        z(elapsed_msecs);
+        z(user_msecs);
+        z(system_msecs);
+        z(current_rss);
+        z(peak_rss);
+        z(current_commit);
+        z(peak_commit);
+        z(page_faults);
     }
 }
 
@@ -1395,16 +1442,24 @@ pub unsafe extern "C" fn mi_heap_realpath(
     fname: *const libc::c_char,
     resolved_name: *mut libc::c_char,
 ) -> *mut libc::c_char {
-    if !resolved_name.is_null() {
-        return libc::realpath(fname, resolved_name);
+    #[cfg(unix)]
+    {
+        if !resolved_name.is_null() {
+            return libc::realpath(fname, resolved_name);
+        }
+        const PATH_MAX: usize = 4096;
+        let mut buf = [0 as libc::c_char; PATH_MAX];
+        let r = libc::realpath(fname, buf.as_mut_ptr());
+        if r.is_null() {
+            return core::ptr::null_mut();
+        }
+        return mi_heap_strdup(heap, buf.as_ptr());
     }
-    const PATH_MAX: usize = 4096;
-    let mut buf = [0 as libc::c_char; PATH_MAX];
-    let r = libc::realpath(fname, buf.as_mut_ptr());
-    if r.is_null() {
-        return core::ptr::null_mut();
+    #[cfg(not(unix))]
+    {
+        let _ = (heap, fname, resolved_name);
+        core::ptr::null_mut()
     }
-    mi_heap_strdup(heap, buf.as_ptr())
 }
 
 #[no_mangle]
@@ -1839,7 +1894,7 @@ pub unsafe extern "C" fn mi_option_set_enabled_default(option: i32, enable: bool
 pub unsafe extern "C" fn mi__expand(p: *mut c_void, newsize: usize) -> *mut c_void {
     let q = mi_expand(p, newsize);
     if q.is_null() {
-        *libc::__errno_location() = libc::ENOMEM;
+        set_enomem();
     }
     q
 }
@@ -2223,32 +2278,47 @@ pub unsafe extern "C" fn _aligned_malloc(size: usize, alignment: usize) -> *mut 
 // shared/static libraries. Programs that `#include <mimalloc-new-delete.h>`
 // must not also statically whole-archive this library (mold does that
 // include only for a *dynamic* system mimalloc).
+#[cfg(not(all(windows, target_env = "msvc")))]
 #[path = "cxx_new_delete.rs"]
 mod cxx_new_delete;
 
-// GNU constructor so we init before most other libraries.
+#[cfg(all(windows, target_env = "msvc"))]
+#[path = "cxx_new_delete_msvc.rs"]
+mod cxx_new_delete;
+
+#[cfg(target_os = "macos")]
+mod osx_interpose;
+
+#[cfg(target_os = "linux")]
 #[used]
 #[link_section = ".init_array"]
 static INIT: extern "C" fn() = mi_ctor;
 
-#[cfg(not(target_env = "gnu"))]
+#[cfg(target_os = "macos")]
+#[used]
+#[link_section = "__DATA,__mod_init_func"]
+static INIT: extern "C" fn() = mi_ctor;
+
+#[cfg(windows)]
+#[used]
+#[link_section = ".CRT$XCU"]
+static INIT: extern "C" fn() = mi_ctor;
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 extern "C" fn process_done_atexit() {
     unsafe {
         mi_process_done();
     }
 }
 
-#[cfg(target_env = "gnu")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" fn process_done_cxa(_: *mut c_void) {
     mi_process_done();
 }
 
 extern "C" fn mi_ctor() {
     mimalloc_core::init();
-    // glibc's `atexit` lives in libc_nonshared.a. A cdylib linked without the
-    // gcc driver (nixpkgs rustc/lld) leaves an unversioned `U atexit` that
-    // is not in libc.so.6, so LD_PRELOAD fails with "undefined symbol: atexit".
-    #[cfg(target_env = "gnu")]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         unsafe extern "C" {
             fn __cxa_atexit(
@@ -2265,8 +2335,21 @@ extern "C" fn mi_ctor() {
             )
         };
     }
-    #[cfg(not(target_env = "gnu"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
         let _ = unsafe { libc::atexit(process_done_atexit) };
+    }
+}
+
+#[cfg(windows)]
+#[used]
+#[link_section = ".CRT$XLB"]
+static TLS_CB: unsafe extern "system" fn(*mut c_void, u32, *mut c_void) = tls_callback;
+
+#[cfg(windows)]
+unsafe extern "system" fn tls_callback(_h: *mut c_void, reason: u32, _reserved: *mut c_void) {
+    const DLL_THREAD_DETACH: u32 = 3;
+    if reason == DLL_THREAD_DETACH {
+        mimalloc_core::thread_done();
     }
 }

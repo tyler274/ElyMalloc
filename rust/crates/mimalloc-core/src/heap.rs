@@ -1041,6 +1041,7 @@ pub unsafe fn abandon(h: *mut ThreadHeap) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 pub unsafe fn force_unlock_meta() {
     META_LOCK.force_unlock();
     crate::arena::force_unlock();
@@ -1049,6 +1050,7 @@ pub unsafe fn force_unlock_meta() {
 
 /// Reset every heap lock after `fork` in the child.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 pub unsafe fn force_unlock_all() {
     force_unlock_meta();
     let mut cur = ALL_HEAPS.load(Ordering::Acquire);
@@ -1296,7 +1298,7 @@ pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
             } else if (*page).used == 0 {
                 let n = ((*page).capacity as usize).saturating_mul((*page).block_size);
                 if n >= os::min_purge_size() {
-                    os::madvise_dontneed((*page).area, n);
+                    os::purge((*page).area, n);
                 }
             }
             page = next;

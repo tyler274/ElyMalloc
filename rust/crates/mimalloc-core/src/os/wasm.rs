@@ -23,6 +23,7 @@ pub fn init() {
             .wrapping_mul(0xA076_1D64_78BD_642F)
             .wrapping_add(WASM_PAGE as u64),
     );
+    let _ = va_bits();
 }
 
 #[inline]
@@ -39,6 +40,21 @@ pub fn abort() -> ! {
 pub fn gettid() -> u32 {
     1
 }
+
+#[inline]
+pub fn thread_id() -> u32 {
+    gettid()
+}
+
+pub fn yield_now() {
+    core::hint::spin_loop();
+}
+
+pub fn va_bits() -> usize {
+    32
+}
+
+pub unsafe fn reuse(_p: *mut u8, _size: usize) {}
 
 fn memory_end() -> usize {
     core::arch::wasm32::memory_size::<0>() * WASM_PAGE

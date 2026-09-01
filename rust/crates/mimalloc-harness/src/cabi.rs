@@ -5,7 +5,6 @@
 //! the secure SONAME copy.
 
 use std::ffi::OsString;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,6 +23,70 @@ fn cxx() -> PathBuf {
     std::env::var_os("CXX")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("c++"))
+}
+
+fn default_cdylib() -> PathBuf {
+    let rust = rust_root();
+    #[cfg(windows)]
+    {
+        rust.join("target/release/mimalloc.dll")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        rust.join("target/release/libmimalloc.dylib")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        rust.join("target/release/libmimalloc.so")
+    }
+}
+
+fn insert_env(so: &Path) -> (&'static str, OsString) {
+    #[cfg(target_os = "macos")]
+    {
+        ("DYLD_INSERT_LIBRARIES", OsString::from(so.as_os_str()))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        ("LD_PRELOAD", OsString::from(so.as_os_str()))
+    }
+    #[cfg(windows)]
+    {
+        (
+            "PATH",
+            OsString::from(so.parent().unwrap_or(so).as_os_str()),
+        )
+    }
+}
+
+fn lib_path_env(dir: &Path) -> (&'static str, OsString) {
+    #[cfg(target_os = "macos")]
+    {
+        let mut lpath = dir.as_os_str().to_os_string();
+        if let Some(prev) = std::env::var_os("DYLD_LIBRARY_PATH") {
+            lpath.push(":");
+            lpath.push(prev);
+        }
+        ("DYLD_LIBRARY_PATH", lpath)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut lpath = dir.as_os_str().to_os_string();
+        if let Some(prev) = std::env::var_os("LD_LIBRARY_PATH") {
+            lpath.push(":");
+            lpath.push(prev);
+        }
+        ("LD_LIBRARY_PATH", lpath)
+    }
+    #[cfg(windows)]
+    {
+        let mut lpath = dir.as_os_str().to_os_string();
+        if let Some(prev) = std::env::var_os("PATH") {
+            lpath.push(";");
+            lpath.push(prev);
+        }
+        ("PATH", lpath)
+    }
 }
 
 fn compile(cc: &Path, args: &[&str], srcs: &[&Path], out: &Path) -> Result<()> {
@@ -45,11 +108,15 @@ fn compile(cc: &Path, args: &[&str], srcs: &[&Path], out: &Path) -> Result<()> {
 
 fn soname_link(so: &Path) -> Result<PathBuf> {
     let dir = so.parent().context("so parent")?;
-    let versioned = crate::process::readelf_soname(so)
-        .unwrap_or_else(|_| crate::process::expected_soname(so).to_string());
-    let link = dir.join(&versioned);
-    let _ = std::fs::remove_file(&link);
-    symlink(so.file_name().context("so name")?, &link).ok();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::symlink;
+        let versioned = crate::process::readelf_soname(so)
+            .unwrap_or_else(|_| crate::process::expected_soname(so).to_string());
+        let link = dir.join(&versioned);
+        let _ = std::fs::remove_file(&link);
+        symlink(so.file_name().context("so name")?, &link).ok();
+    }
     Ok(dir.to_path_buf())
 }
 
@@ -57,11 +124,8 @@ fn soname_link(so: &Path) -> Result<PathBuf> {
 pub fn run() -> Result<()> {
     let rust = rust_root();
     let repo = repo_root();
-    let so = std::env::var("SO").unwrap_or_else(|_| {
-        rust.join("target/release/libmimalloc.so")
-            .to_string_lossy()
-            .into_owned()
-    });
+    let so =
+        std::env::var("SO").unwrap_or_else(|_| default_cdylib().to_string_lossy().into_owned());
     let so = PathBuf::from(&so)
         .canonicalize()
         .with_context(|| format!("missing {so}"))?;
@@ -80,32 +144,46 @@ pub fn run() -> Result<()> {
     );
     std::fs::create_dir_all(&out)?;
 
+    #[cfg(windows)]
+    {
+        let cc = cc();
+        let smoke = out.join("mi-smoke-win");
+        compile(&cc, &["-O2"], &[&c_tests.join("smoke-win.c"), &so], &smoke)?;
+        let libpath = [lib_path_env(so.parent().unwrap_or(&so))];
+        run_ok(&smoke, &[] as &[&str], &libpath)?;
+        println!("c-abi windows smoke passed");
+        return Ok(());
+    }
+
     let sodir = soname_link(&so)?;
-    if let Ok(readelf) = which::which("readelf") {
-        let _ = Command::new(&readelf).arg("-d").arg(&so).status();
-        if let Ok(name) = crate::process::readelf_soname(&so) {
-            let want = crate::process::expected_soname(&so);
-            if name != want {
-                bail!("{} SONAME {name}, expected {want}", so.display());
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(readelf) = which::which("readelf") {
+            let _ = Command::new(&readelf).arg("-d").arg(&so).status();
+            if let Ok(name) = crate::process::readelf_soname(&so) {
+                let want = crate::process::expected_soname(&so);
+                if name != want {
+                    bail!("{} SONAME {name}, expected {want}", so.display());
+                }
             }
         }
-    }
-    crate::process::check_glibc_cdylib_preload(&so)?;
-    if let Ok(nm) = which::which("nm") {
-        let outp = Command::new(nm)
-            .args(["-D", "--defined-only"])
-            .arg(&so)
-            .output()?;
-        let text = String::from_utf8_lossy(&outp.stdout);
-        if !text.lines().any(|l| {
-            l.ends_with(" malloc")
-                || l.ends_with(" free")
-                || l.ends_with(" calloc")
-                || l.ends_with(" realloc")
-                || l.ends_with(" posix_memalign")
-                || l.ends_with(" mi_malloc")
-        }) {
-            bail!("expected malloc/free/mi_malloc in {so:?}");
+        crate::process::check_glibc_cdylib_preload(&so)?;
+        if let Ok(nm) = which::which("nm") {
+            let outp = Command::new(nm)
+                .args(["-D", "--defined-only"])
+                .arg(&so)
+                .output()?;
+            let text = String::from_utf8_lossy(&outp.stdout);
+            if !text.lines().any(|l| {
+                l.ends_with(" malloc")
+                    || l.ends_with(" free")
+                    || l.ends_with(" calloc")
+                    || l.ends_with(" realloc")
+                    || l.ends_with(" posix_memalign")
+                    || l.ends_with(" mi_malloc")
+            }) {
+                bail!("expected malloc/free/mi_malloc in {so:?}");
+            }
         }
     }
 
@@ -113,13 +191,8 @@ pub fn run() -> Result<()> {
     let inc = include.to_string_lossy().into_owned();
     let inc_arg = format!("-I{inc}");
     let so_s = so.to_string_lossy().into_owned();
-    let preload = [("LD_PRELOAD", OsString::from(so.as_os_str()))];
-    let mut lpath = sodir.as_os_str().to_os_string();
-    if let Some(prev) = std::env::var_os("LD_LIBRARY_PATH") {
-        lpath.push(":");
-        lpath.push(prev);
-    }
-    let libpath = [("LD_LIBRARY_PATH", lpath)];
+    let preload = [insert_env(&so)];
+    let libpath = [lib_path_env(&sodir)];
 
     let smoke = out.join("mi-smoke");
     compile(
@@ -173,11 +246,7 @@ pub fn run() -> Result<()> {
         if debug.is_file() {
             let debug = debug.canonicalize()?;
             let ddir = soname_link(&debug)?;
-            let mut dpath = ddir.as_os_str().to_os_string();
-            if let Some(prev) = std::env::var_os("LD_LIBRARY_PATH") {
-                dpath.push(":");
-                dpath.push(prev);
-            }
+            let (k, dpath) = lib_path_env(&ddir);
             let fill_dbg = out.join("mi-api-fill-debug");
             compile(
                 &cc,
@@ -185,7 +254,7 @@ pub fn run() -> Result<()> {
                 &[&upstream.join("test-api-fill.c"), &debug],
                 &fill_dbg,
             )?;
-            run_ok(&fill_dbg, &[] as &[&str], &[("LD_LIBRARY_PATH", dpath)])?;
+            run_ok(&fill_dbg, &[] as &[&str], &[(k, dpath)])?;
         }
     }
 
@@ -218,7 +287,7 @@ pub fn run() -> Result<()> {
         run_ok(&cxxb, &[] as &[&str], &libpath)?;
     }
 
-    if !env_is_one("SKIP_RUST_ONLY") {
+    if !env_is_one("SKIP_RUST_ONLY") && !cfg!(windows) {
         let proc = out.join("mi-process");
         compile(
             &cc,
