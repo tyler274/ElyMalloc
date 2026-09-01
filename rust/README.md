@@ -10,9 +10,9 @@ Crate rustdocs (`//!` / `///`) are the per-module source of truth. This README i
 |-------|------|
 | `mimalloc-core` | `no_std` allocator (pages, heaps, arenas). Always-on `MI_SECURE` mitigations. `GlobalAlloc` via `Mimalloc`. |
 | `mimalloc-c` | `cdylib`/`staticlib`: libc + `mi_*`, SONAME `libmimalloc.so.3` or `libmimalloc-secure.so.3`. |
-| `mimalloc-harness` | Oracle, world, browsers, Bun/Serde, VMA, wasm. Logic is unit-tested in the lib. |
+| `mimalloc-harness` | Oracle, world, browsers, Bun/Serde, Leptos WASM, VMA, wasm. Logic is unit-tested in the lib. |
 | `vma-core` / `vma-c` | AMD VMA 3.4 C ABI (`libVulkanMemoryAllocator.so.3`). |
-| `mimalloc-wasm-smoke` / `mimalloc-alloc-stress` / `mimalloc-bench` | GlobalAlloc smokes and benches. |
+| `mimalloc-wasm-smoke` / `mimalloc-leptos-smoke` / `mimalloc-alloc-stress` / `mimalloc-bench` | GlobalAlloc smokes and benches. |
 
 ## Build
 
@@ -77,6 +77,17 @@ use mimalloc_core::Mimalloc;
 
 #[global_allocator]
 static ALLOC: Mimalloc = Mimalloc;
+```
+
+### Leptos WASM suites
+
+[Leptos](https://github.com/leptos-rs/leptos) (`leptos` 0.8) is a Rust web framework whose reactive runtime (`reactive_graph`, plus `oco` / `either_of` / `hydration_context` / …) is a real WASM allocator workout: thousands of small heap objects, nested owners, memos, and string churn. The harness clones upstream, injects `mimalloc_core::Mimalloc` as `#[global_allocator]` into those crates, and **runs** `cargo test --lib --target wasm32-wasip1` under wasmtime. Compile/link success is not enough. In-tree `mimalloc-leptos-smoke` is the same `reactive_graph` path without a network fetch. `leptos` CSR is `cargo check --target wasm32-unknown-unknown` (DOM tests need a browser; WASI already executed).
+
+```
+cd rust
+./tests/leptos.sh
+# or: cargo run -p mimalloc-harness -- leptos
+# LEPTOS_SRC=/path/to/leptos  LEPTOS_REFRESH=1
 ```
 
 ## Vulkan Memory Allocator

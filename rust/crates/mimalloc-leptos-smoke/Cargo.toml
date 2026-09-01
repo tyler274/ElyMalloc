@@ -1,0 +1,12 @@
+[package]
+name = "mimalloc-leptos-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Leptos reactive_graph WASM GlobalAlloc stress for mimalloc-core"
+
+[dependencies]
+mimalloc-core = { path = "../mimalloc-core" }
+any_spawner = { version = "0.3", default-features = false, features = ["futures-executor"] }
+reactive_graph = { version = "0.2", default-features = false, features = ["effects"] }

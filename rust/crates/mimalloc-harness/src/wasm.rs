@@ -15,6 +15,9 @@ pub enum WasmImportPolicy {
     ExpectNone,
     /// wasm32-wasip1: WASI preview imports only.
     AllowWasi,
+    /// No libc/emscripten malloc. wasm-bindgen / JS host imports are allowed
+    /// (Leptos CSR / `web-sys`).
+    NoLibc,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +59,7 @@ pub fn check_imports(imps: &[WasmImport], policy: WasmImportPolicy) -> Result<()
                     forbidden.push(format!("{}.{}", imp.module, imp.name));
                 }
             }
+            WasmImportPolicy::NoLibc => {}
         }
     }
     forbidden.sort();
@@ -96,6 +100,46 @@ pub fn wasm_imports(data: &[u8]) -> anyhow::Result<Vec<WasmImport>> {
 pub fn wasm_imports_file(path: &Path) -> anyhow::Result<Vec<WasmImport>> {
     let data = std::fs::read(path).with_context(|| format!("read {path:?}"))?;
     wasm_imports(&data)
+}
+
+pub fn ensure_wasm_targets() -> anyhow::Result<()> {
+    let rustup = which::which("rustup").context("wasm: rustup not found")?;
+    let st = std::process::Command::new(rustup)
+        .args(["target", "add", "wasm32-unknown-unknown", "wasm32-wasip1"])
+        .status()?;
+    if !st.success() {
+        anyhow::bail!("rustup target add failed");
+    }
+    Ok(())
+}
+
+pub fn find_wasmtime() -> Option<std::path::PathBuf> {
+    if let Ok(p) = which::which("wasmtime") {
+        return Some(p);
+    }
+    for cand in [
+        "/run/current-system/sw/bin/wasmtime",
+        "/usr/bin/wasmtime",
+    ] {
+        let p = std::path::PathBuf::from(cand);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Ok(nix) = which::which("nix-build") {
+        let out = std::process::Command::new(nix)
+            .args(["--no-out-link", "<nixpkgs>", "-A", "wasmtime"])
+            .output()
+            .ok()?;
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let bin = std::path::PathBuf::from(p).join("bin/wasmtime");
+            if bin.is_file() {
+                return Some(bin);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -174,6 +218,13 @@ mod tests {
         }];
         assert!(check_imports(&malloc, WasmImportPolicy::AllowWasi).is_err());
         assert!(check_imports(&malloc, WasmImportPolicy::ExpectNone).is_err());
+        assert!(check_imports(&malloc, WasmImportPolicy::NoLibc).is_err());
+        let wbg = [WasmImport {
+            module: "__wbindgen_placeholder__".into(),
+            name: "__wbindgen_describe".into(),
+        }];
+        assert!(check_imports(&wbg, WasmImportPolicy::NoLibc).is_ok());
+        assert!(check_imports(&wbg, WasmImportPolicy::ExpectNone).is_err());
     }
 
     #[test]

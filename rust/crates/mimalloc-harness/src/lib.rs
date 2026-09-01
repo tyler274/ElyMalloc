@@ -15,6 +15,7 @@
 //! | [`mod@bench`] | `bench` |
 //! | [`world`] | `world` |
 //! | [`projects`] | `projects` (Bun, Serde) |
+//! | [`leptos`] | `leptos` (Leptos WASM suites) |
 //! | [`vma`] | `vma` (AMD VMA 3.4) |
 //! | [`browsers`] | `browsers` |
 
@@ -26,6 +27,7 @@ pub mod crash;
 pub mod failset;
 pub mod filter;
 pub mod ids;
+pub mod leptos;
 pub mod linkers;
 pub mod normalize;
 pub mod oracle;

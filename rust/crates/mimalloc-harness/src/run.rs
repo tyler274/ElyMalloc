@@ -9,6 +9,7 @@ pub fn run() -> Result<()> {
     cargo_ok(&["test", "-p", "mimalloc-harness"])?;
     cargo_ok(&["test", "-p", "mimalloc-core"])?;
     cargo_ok(&["test", "-p", "mimalloc-wasm-smoke"])?;
+    cargo_ok(&["test", "-p", "mimalloc-leptos-smoke"])?;
     cargo_ok(&["test", "-p", "mimalloc-alloc-stress"])?;
     crate::process::build_mimalloc_cdylibs()?;
     cargo_ok(&["build", "-p", "mimalloc-c"])?;

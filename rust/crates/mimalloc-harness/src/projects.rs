@@ -267,7 +267,7 @@ fn git_sparse(dir: &Path, url: &str, cones: &[&str], refs: &[&str]) -> Result<()
     Ok(())
 }
 
-fn git_clone_depth(dir: &Path, url: &str, refs: &[&str]) -> Result<()> {
+pub(crate) fn git_clone_depth(dir: &Path, url: &str, refs: &[&str]) -> Result<()> {
     let _ = fs::remove_dir_all(dir);
     let parent = dir.parent().context("clone parent")?;
     fs::create_dir_all(parent)?;

@@ -7,43 +7,15 @@ use anyhow::{bail, Context, Result};
 
 use crate::process::cargo_in_root;
 use crate::rust_root;
-use crate::wasm::{cargo_tree_has_libc, check_imports, wasm_imports_file, WasmImportPolicy};
+use crate::wasm::{
+    cargo_tree_has_libc, check_imports, ensure_wasm_targets, find_wasmtime, wasm_imports_file,
+    WasmImportPolicy,
+};
 
 fn cargo_target_dir() -> PathBuf {
     std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| rust_root().join("target"))
-}
-
-fn ensure_wasm_targets() -> Result<()> {
-    let rustup = which::which("rustup").context("wasm-smoke: rustup not found")?;
-    let st = Command::new(rustup)
-        .args(["target", "add", "wasm32-unknown-unknown", "wasm32-wasip1"])
-        .status()?;
-    if !st.success() {
-        bail!("rustup target add failed");
-    }
-    Ok(())
-}
-
-fn find_wasmtime() -> Option<PathBuf> {
-    if let Ok(p) = which::which("wasmtime") {
-        return Some(p);
-    }
-    if let Ok(nix) = which::which("nix-build") {
-        let out = Command::new(nix)
-            .args(["--no-out-link", "<nixpkgs>", "-A", "wasmtime"])
-            .output()
-            .ok()?;
-        if out.status.success() {
-            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let bin = PathBuf::from(p).join("bin/wasmtime");
-            if bin.is_file() {
-                return Some(bin);
-            }
-        }
-    }
-    None
 }
 
 pub fn run() -> Result<()> {

@@ -4,6 +4,7 @@ members = [
     "crates/mimalloc-core",
     "crates/mimalloc-c",
     "crates/mimalloc-wasm-smoke",
+    "crates/mimalloc-leptos-smoke",
     "crates/mimalloc-harness",
     "crates/mimalloc-alloc-stress",
     "crates/mimalloc-bench",

@@ -75,11 +75,13 @@ rustPlatform.buildRustPackage {
     runHook preCheck
     cargo test --offline -p mimalloc-core --release ${targetFlag}
     cargo test --offline -p mimalloc-wasm-smoke --release ${targetFlag}
+    cargo test --offline -p mimalloc-leptos-smoke --release ${targetFlag}
     cargo test --offline -p mimalloc-harness --release ${targetFlag}
     cargo test --offline -p mimalloc-alloc-stress --release ${targetFlag}
     ${lib.optionalString (cargoTarget == null) ''
     cargo check --offline -p mimalloc-core --target wasm32-unknown-unknown
     cargo check --offline -p mimalloc-wasm-smoke --target wasm32-unknown-unknown
+    cargo check --offline -p mimalloc-leptos-smoke --target wasm32-unknown-unknown
     ''}
     cargo build --release -p mimalloc-c ${targetFlag}
     cargo build --release -p mimalloc-c --features secure --target-dir target/mimalloc-secure ${targetFlag}
