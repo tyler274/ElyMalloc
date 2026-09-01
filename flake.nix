@@ -1,6 +1,9 @@
 {
   description = "Pure-Rust mimalloc rewrite with a C ABI drop-in";
 
+  # Consumers: use `git+file:///abs/path` or github:, not `path:/…`. A path
+  # input copies gitignored `rust/target` into the Nix store (~4GiB/update).
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     # Host rustc from nixpkgs has no musl std; rust-overlay supplies rust-std

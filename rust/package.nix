@@ -24,7 +24,18 @@ rustPlatform.buildRustPackage {
   pname = "mimalloc";
   version = "3.5.0";
 
-  src = ./.;
+  # Cargo workspace only. `src = ./.` would include gitignored `target/` when
+  # a consumer uses `path:` (that input type copies the working tree, ~4GiB).
+  src = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [
+      ./Cargo.toml
+      ./Cargo.lock
+      ./crates
+      ./.cargo
+      ./rust-toolchain.toml
+    ];
+  };
 
   cargoLock.lockFile = ./Cargo.lock;
 

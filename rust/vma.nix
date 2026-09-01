@@ -18,7 +18,16 @@ rustPlatform.buildRustPackage {
   pname = "VulkanMemoryAllocator";
   version = "3.4.0";
 
-  src = ./.;
+  src = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [
+      ./Cargo.toml
+      ./Cargo.lock
+      ./crates
+      ./.cargo
+      ./rust-toolchain.toml
+    ];
+  };
 
   cargoLock.lockFile = ./Cargo.lock;
 

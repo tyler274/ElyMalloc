@@ -102,7 +102,8 @@ The flake overlay replaces `pkgs.mimalloc` with this library. Mitigations are al
 
 ```nix
 {
-  inputs.mimalloc-rs.url = "path:/home/luluco/code/mimalloc";
+  # `path:` copies gitignored rust/target (~4GiB) into the store; use git+file or github.
+  inputs.mimalloc-rs.url = "git+file:///home/luluco/code/mimalloc";
   # and in nixos configuration:
   nixpkgs.overlays = [ mimalloc-rs.overlays.default ];
   environment.memoryAllocator.provider = "mimalloc";
