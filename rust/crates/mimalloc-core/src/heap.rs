@@ -457,8 +457,8 @@ pub unsafe fn malloc_huge_at(
         os::enomem();
         return ptr::null_mut();
     }
-    crate::stats::malloc_add(size.max(1));
-    (*h).stats.add_malloc(size.max(1));
+    crate::stats::malloc_add((*page).block_size);
+    (*h).stats.add_malloc((*page).block_size);
     p
 }
 
@@ -521,8 +521,8 @@ unsafe fn malloc_guarded(h: *mut ThreadHeap, size: usize, align: usize) -> *mut 
         os::enomem();
         return ptr::null_mut();
     }
-    crate::stats::malloc_add(payload);
-    (*h).stats.add_malloc(payload);
+    crate::stats::malloc_add((*page).block_size);
+    (*h).stats.add_malloc((*page).block_size);
     crate::stats::malloc_guarded_add();
     p
 }

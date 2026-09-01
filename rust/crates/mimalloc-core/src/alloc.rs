@@ -117,7 +117,8 @@ pub unsafe fn calloc(count: usize, size: usize) -> *mut u8 {
 }
 
 /// `realloc`: null `p` is `malloc`; `newsize == 0` frees and returns `malloc(0)`.
-/// In-place if the existing block already fits (padding-adjusted).
+/// In-place if the existing block already fits (including unused size-class
+/// or huge-page slack). `usable_size` stays the last requested size.
 pub unsafe fn realloc(p: *mut u8, newsize: usize) -> *mut u8 {
     if p.is_null() {
         return malloc(newsize);
@@ -128,6 +129,9 @@ pub unsafe fn realloc(p: *mut u8, newsize: usize) -> *mut u8 {
     }
     let usable = usable_size(p as *const u8);
     if usable >= newsize {
+        return p;
+    }
+    if page::try_realloc_in_place(p, newsize) {
         return p;
     }
     let q = malloc(newsize);

@@ -255,6 +255,27 @@ mod tests {
         }
     }
 
+    /// kmod/xz decompresses nvidia.ko with `realloc(p, n + 8192)` in a loop.
+    /// That must stay in-place once the block has slack, or boot `modprobe` livelocks.
+    #[test]
+    fn realloc_linear_grow_like_kmod() {
+        unsafe {
+            let mut n = 8192usize;
+            let mut p = alloc::malloc(n);
+            assert!(!p.is_null());
+            *p = 0xA5;
+            while n < 4 * 1024 * 1024 {
+                n += 8192;
+                p = alloc::realloc(p, n);
+                assert!(!p.is_null(), "realloc to {n}");
+                assert_eq!(*p, 0xA5);
+                assert_eq!(alloc::usable_size(p), n);
+            }
+            *p.add(n - 1) = 0x5A;
+            alloc::free(p);
+        }
+    }
+
     #[test]
     fn aligned_allocs() {
         unsafe {

@@ -460,7 +460,17 @@ pub unsafe fn create_huge(
     if !align.is_power_of_two() {
         return ptr::null_mut();
     }
-    let payload = size.max(16);
+    // Over-allocate to the next power of two (min one 64 KiB slice) so
+    // programs that `realloc` in small steps (kmod/xz grows a .ko 8 KiB
+    // at a time) can stay in-place instead of mmap+copy+munmap each call.
+    let need = size.max(16);
+    let payload = align_up(
+        need
+            .checked_next_power_of_two()
+            .unwrap_or(need)
+            .max(SLICE_SIZE),
+        SLICE_SIZE,
+    );
     let (lead, meta, prefix) = meta_prefix(16);
     let tail = end_guard_size();
     let total = align_up(
@@ -487,8 +497,14 @@ pub unsafe fn create_huge(
         unmap_page_memory(base, total, from_arena);
         return ptr::null_mut();
     }
+    let area_end = (base as usize) + total - tail;
+    let block_bytes = area_end.saturating_sub(area as usize);
+    if block_bytes < need {
+        unmap_page_memory(base, total, from_arena);
+        return ptr::null_mut();
+    }
     (*page).magic = PAGE_MAGIC;
-    (*page).block_size = size.max(16);
+    (*page).block_size = block_bytes;
     (*page).capacity = 1;
     (*page).used = 0;
     (*page).local_free = area as *mut Block;
@@ -726,6 +742,32 @@ pub unsafe fn finish_alloc(p: *mut u8, user_size: usize) -> *mut u8 {
         write_padding(p, user_size);
     }
     p
+}
+
+/// Grow (or shrink) in the existing block if the size class / huge mapping
+/// has room. Updates the padding trailer so `usable_size` stays exact.
+/// Guarded objects only succeed when `newsize` already fits before the OS page.
+pub unsafe fn try_realloc_in_place(p: *mut u8, newsize: usize) -> bool {
+    if p.is_null() || newsize == 0 {
+        return false;
+    }
+    let page = page_map::get(p);
+    if page.is_null() || (*page).magic != PAGE_MAGIC {
+        return false;
+    }
+    if (*page).is_guarded() {
+        return usable_size(page, p) >= newsize;
+    }
+    if (*page).block_size < PADDING_SIZE || !is_block_start(page, p) {
+        return false;
+    }
+    let bsize = (*page).block_size - PADDING_SIZE;
+    let need = request_size(newsize);
+    if need > bsize {
+        return false;
+    }
+    write_padding(p, need);
+    true
 }
 
 unsafe fn decode_padding(page: *mut Page, block: *mut u8) -> Option<(usize, usize)> {
