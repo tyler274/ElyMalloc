@@ -2,8 +2,10 @@
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic ignored "-Walloc-size-larger-than="
 #endif
+#include <atomic>
 #include <cstdio>
 #include <new>
+#include <thread>
 #include <vector>
 #include "mimalloc.h"
 
@@ -37,6 +39,43 @@ int main() {
   {
     void* p = mi_new_nothrow(static_cast<size_t>(-1) / 2);
     if (p != NULL) die("new_nothrow huge");
+  }
+
+  {
+    // KWin/LLVM: many compiler threads, first alloc is aligned nothrow new(4096, 16).
+    const int n = 64;
+    std::atomic<int> ready{0};
+    std::atomic<int> go{0};
+    std::atomic<int> ok{0};
+    std::vector<std::thread> ts;
+    ts.reserve(n);
+    for (int i = 0; i < n; i++) {
+      ts.emplace_back([&] {
+        ready.fetch_add(1, std::memory_order_relaxed);
+        while (go.load(std::memory_order_acquire) == 0) {
+        }
+        void* p = ::operator new(4096, std::align_val_t(16), std::nothrow);
+        if (p == nullptr) {
+          return;
+        }
+        static_cast<char*>(p)[0] = 1;
+        static_cast<char*>(p)[4095] = 2;
+        void* z = ::operator new(64, std::align_val_t(0), std::nothrow);
+        ::operator delete(p, std::align_val_t(16), std::nothrow);
+        if (z == nullptr) {
+          return;
+        }
+        ::operator delete(z, std::align_val_t(16), std::nothrow);
+        ok.fetch_add(1, std::memory_order_relaxed);
+      });
+    }
+    while (ready.load(std::memory_order_relaxed) < n) {
+    }
+    go.store(1, std::memory_order_release);
+    for (auto& t : ts) {
+      t.join();
+    }
+    if (ok.load(std::memory_order_relaxed) != n) die("aligned nothrow first alloc");
   }
 
   std::set_new_handler([] { throw std::bad_alloc(); });

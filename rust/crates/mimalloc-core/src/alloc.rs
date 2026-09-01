@@ -57,11 +57,22 @@ pub fn init() {
 
 #[inline]
 unsafe fn heap() -> *mut heap::ThreadHeap {
-    let h = tls::default_theap();
-    if h.is_null() {
-        os::enomem();
+    tls::default_theap()
+}
+
+/// When TLS heap create is in flight or failed, still serve small allocs.
+unsafe fn malloc_aligned_fallback(size: usize, align: usize) -> *mut u8 {
+    let align = if align == 0 { 16 } else { align };
+    if !align.is_power_of_two() {
+        os::einval();
+        return ptr::null_mut();
     }
-    h
+    let total = size.saturating_add(align);
+    let raw = bootstrap_alloc(total);
+    if raw.is_null() {
+        return ptr::null_mut();
+    }
+    crate::align_up(raw as usize, align) as *mut u8
 }
 
 /// `malloc`: aligned to [`crate::MAX_ALIGN_SIZE`]. Null on OOM (`ENOMEM`).
@@ -86,7 +97,7 @@ pub unsafe fn malloc(size: usize) -> *mut u8 {
     }
     let h = heap();
     if h.is_null() {
-        return ptr::null_mut();
+        return bootstrap_alloc(size);
     }
     heap::theap_malloc(h, size)
 }
@@ -216,23 +227,15 @@ pub fn good_size(size: usize) -> usize {
     bin::good_size(size)
 }
 
-/// `mi_malloc_aligned`: `align` must be a power of two.
+/// `mi_malloc_aligned`: `align` must be a power of two. `align == 0` is treated
+/// as 16 (`nothrow` `operator new` / LLVM `BumpPtrAllocator` have used 0).
 pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
+    let align = if align == 0 { 16 } else { align };
     if tls::in_recursive_setup() {
-        let align = align.max(16);
-        if !align.is_power_of_two() {
-            os::einval();
-            return ptr::null_mut();
-        }
-        let total = size.saturating_add(align);
-        let raw = bootstrap_alloc(total);
-        if raw.is_null() {
-            return ptr::null_mut();
-        }
-        return crate::align_up(raw as usize, align) as *mut u8;
+        return malloc_aligned_fallback(size, align);
     }
     crate::init();
-    if align == 0 || !align.is_power_of_two() {
+    if !align.is_power_of_two() {
         os::einval();
         return ptr::null_mut();
     }
@@ -242,7 +245,7 @@ pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
     }
     let h = heap();
     if h.is_null() {
-        return ptr::null_mut();
+        return malloc_aligned_fallback(size, align);
     }
     heap::theap_malloc_aligned(h, size, align)
 }

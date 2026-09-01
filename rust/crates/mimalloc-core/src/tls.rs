@@ -3,9 +3,10 @@
 //! Two keys: the thread's default theap (destructor abandons pages) and
 //! the current default used by `malloc` (`mi_heap_set_default`). During
 //! `pthread_key_create` / `pthread_setspecific` / first `heap::create`,
-//! [`IN_BOOTSTRAP`] is set so malloc uses a static bump (glibc may allocate
-//! from those paths). A tid slot marks the creating thread so recursive
-//! malloc cannot call `heap::create` again (that used to mmap until OOM).
+//! [`IN_BOOTSTRAP`] / [`CREATE_OWNER`] mark this thread so malloc uses a
+//! static bump (glibc may allocate from those paths). Heap create is
+//! claimed by exact tid (not a hash slot): a colliding slot used to drop
+//! the mark, stack another `heap::create`, and return null to `nothrow new`.
 
 use crate::heap;
 use core::sync::atomic::{AtomicBool, AtomicU32};
@@ -16,6 +17,9 @@ pub static IN_BOOTSTRAP: AtomicBool = AtomicBool::new(false);
 pub static BOOTSTRAP_TID: AtomicU32 = AtomicU32::new(0);
 /// Thread holding [`crate::init`]'s lock (nested malloc must not take it).
 pub static INIT_OWNER: AtomicU32 = AtomicU32::new(0);
+/// Thread inside `heap::create` / `pthread_setspecific` (0 = none). Recursive
+/// malloc on this tid uses the bootstrap bump; other threads wait.
+pub static CREATE_OWNER: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(not(target_arch = "wasm32"))]
 mod pthread {
@@ -23,56 +27,45 @@ mod pthread {
     use crate::heap::ThreadHeap;
     use crate::spin::SpinLock;
     use core::ptr;
-    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     const KEY_UNSET: usize = usize::MAX;
-    const CREATE_SLOTS: usize = 1024;
 
     static KEY: AtomicUsize = AtomicUsize::new(KEY_UNSET);
     static DEFAULT_KEY: AtomicUsize = AtomicUsize::new(KEY_UNSET);
     static KEY_LOCK: SpinLock = SpinLock::new();
-    static CREATING_TID: [AtomicU32; CREATE_SLOTS] = {
-        const ZERO: AtomicU32 = AtomicU32::new(0);
-        [ZERO; CREATE_SLOTS]
-    };
-
-    fn create_slot(tid: u32) -> usize {
-        (tid as usize).wrapping_mul(0x9E37_79B9) % CREATE_SLOTS
-    }
-
-    fn mark_creating(tid: u32) {
-        CREATING_TID[create_slot(tid)].store(tid, Ordering::Release);
-    }
-
-    fn unmark_creating(tid: u32) {
-        let slot = &CREATING_TID[create_slot(tid)];
-        let _ = slot.compare_exchange(tid, 0, Ordering::Release, Ordering::Relaxed);
-    }
-
-    fn is_creating(tid: u32) -> bool {
-        CREATING_TID[create_slot(tid)].load(Ordering::Acquire) == tid
-    }
 
     /// True if this thread must not re-enter heap/TLS init (use the bootstrap bump).
     pub fn in_recursive_setup() -> bool {
         let me = crate::os::gettid();
         INIT_OWNER.load(Ordering::Acquire) == me
             || (IN_BOOTSTRAP.load(Ordering::Acquire) && BOOTSTRAP_TID.load(Ordering::Acquire) == me)
-            || is_creating(me)
+            || CREATE_OWNER.load(Ordering::Acquire) == me
     }
 
     fn begin_bootstrap() {
         let me = crate::os::gettid();
         BOOTSTRAP_TID.store(me, Ordering::Release);
         IN_BOOTSTRAP.store(true, Ordering::Release);
-        mark_creating(me);
     }
 
     fn end_bootstrap() {
-        let me = crate::os::gettid();
-        unmark_creating(me);
         IN_BOOTSTRAP.store(false, Ordering::Release);
         BOOTSTRAP_TID.store(0, Ordering::Release);
+    }
+
+    fn wait_while_creating() {
+        let mut spins = 0u32;
+        while CREATE_OWNER.load(Ordering::Acquire) != 0 {
+            spins = spins.wrapping_add(1);
+            if spins > 100 {
+                unsafe {
+                    libc::sched_yield();
+                }
+            } else {
+                core::hint::spin_loop();
+            }
+        }
     }
 
     unsafe extern "C" fn thread_dtor(ptr: *mut libc::c_void) {
@@ -132,19 +125,38 @@ mod pthread {
     /// Thread's owning theap; the pthread destructor calls `heap::abandon`.
     pub unsafe fn thread_heap() -> *mut ThreadHeap {
         let me = crate::os::gettid();
-        if is_creating(me) {
+        if CREATE_OWNER.load(Ordering::Acquire) == me {
             // Recursive malloc must take the bootstrap path in `alloc::malloc`.
             return ptr::null_mut();
         }
         let key = ensure_key();
         let mut h = libc::pthread_getspecific(key) as *mut ThreadHeap;
-        if h.is_null() {
-            mark_creating(me);
-            h = heap::create();
-            if !h.is_null() {
-                libc::pthread_setspecific(key, h as *const libc::c_void);
+        if !h.is_null() {
+            return h;
+        }
+        loop {
+            if CREATE_OWNER.load(Ordering::Acquire) == me {
+                return ptr::null_mut();
             }
-            unmark_creating(me);
+            h = libc::pthread_getspecific(key) as *mut ThreadHeap;
+            if !h.is_null() {
+                return h;
+            }
+            match CREATE_OWNER.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(_) => wait_while_creating(),
+            }
+        }
+        struct CreateGuard;
+        impl Drop for CreateGuard {
+            fn drop(&mut self) {
+                CREATE_OWNER.store(0, Ordering::Release);
+            }
+        }
+        let _g = CreateGuard;
+        h = heap::create();
+        if !h.is_null() {
+            libc::pthread_setspecific(key, h as *const libc::c_void);
         }
         h
     }
@@ -176,6 +188,7 @@ mod pthread {
 
     pub unsafe fn force_unlock() {
         KEY_LOCK.force_unlock();
+        CREATE_OWNER.store(0, Ordering::Release);
     }
 
     pub unsafe fn thread_done() {
@@ -229,6 +242,7 @@ mod wasm {
         INIT_OWNER.load(core::sync::atomic::Ordering::Acquire) == me
             || (IN_BOOTSTRAP.load(core::sync::atomic::Ordering::Acquire)
                 && BOOTSTRAP_TID.load(core::sync::atomic::Ordering::Acquire) == me)
+            || CREATE_OWNER.load(core::sync::atomic::Ordering::Acquire) == me
     }
 
     /// Single process heap (wasm has no threads).

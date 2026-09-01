@@ -1039,4 +1039,38 @@ mod tests {
         .join()
         .expect("dtor thread panicked");
     }
+
+    /// Gallium/LLVM spawn many compiler threads whose first alloc is aligned
+    /// `nothrow new(4096, align_val_t(16))`. A hashed tid slot used to drop the
+    /// creating mark and return null from that path.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn many_threads_first_aligned_malloc_is_not_null() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        const N: usize = 64;
+        let bar = Arc::new(Barrier::new(N));
+        let mut joins = Vec::new();
+        for _ in 0..N {
+            let bar = bar.clone();
+            joins.push(thread::spawn(move || unsafe {
+                bar.wait();
+                let p = alloc::malloc_aligned(4096, 16);
+                assert!(!p.is_null(), "first aligned malloc returned null");
+                assert_eq!(p as usize % 16, 0);
+                core::ptr::write_bytes(p, 0xAB, 4096);
+                let z = alloc::malloc_aligned(64, 0);
+                assert!(!z.is_null(), "align 0 must not return null");
+                assert_eq!(z as usize % 16, 0);
+                let q = alloc::malloc(32);
+                assert!(!q.is_null());
+                alloc::free(p);
+                alloc::free(z);
+                alloc::free(q);
+            }));
+        }
+        for j in joins {
+            j.join().expect("worker panicked");
+        }
+    }
 }

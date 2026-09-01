@@ -778,7 +778,8 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
         os::enomem();
         return ptr::null_mut();
     }
-    if align == 0 || !align.is_power_of_two() {
+    let align = if align == 0 { 16 } else { align };
+    if !align.is_power_of_two() {
         os::einval();
         return ptr::null_mut();
     }
