@@ -1,4 +1,4 @@
-# Rewrite (Rust mimalloc) — does not replace C `test.yaml`.
+# Rewrite (Rust mimalloc) - does not replace C `test.yaml`.
 name: Rewrite
 
 on:
@@ -110,3 +110,19 @@ jobs:
           cargo test -p mimalloc-core --release
           cargo build --release -p mimalloc-c
           cargo run -p mimalloc-harness -- c-abi
+
+  kani:
+    name: Kani proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: mimalloc-core
+        uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: rust
+          args: -p mimalloc-core
+      - name: vma-core
+        uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: rust
+          args: -p vma-core

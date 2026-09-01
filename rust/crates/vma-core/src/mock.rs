@@ -709,3 +709,111 @@ fn dedicated_image() {
         device::destroy(a);
     }
 }
+
+#[test]
+fn hundreds_of_buffer_alloc_free() {
+    let a = blender_allocator();
+    let mut gpu = VmaAllocationCreateInfo::default();
+    gpu.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    unsafe {
+        let mut bufs = Vec::new();
+        for i in 0..256 {
+            bufs.push(make_buffer(
+                a,
+                128 + (i as u64) * 16,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                &gpu,
+                1,
+            ));
+        }
+        for (i, (buf, alloc, _)) in bufs.iter().enumerate() {
+            if i % 2 == 0 {
+                device::destroy_buffer(a, *buf, *alloc);
+            }
+        }
+        for i in 0..64 {
+            let (buf, alloc, _) = make_buffer(a, 512, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &gpu, 1);
+            device::destroy_buffer(a, buf, alloc);
+            let _ = i;
+        }
+        for (i, (buf, alloc, _)) in bufs.iter().enumerate() {
+            if i % 2 == 1 {
+                device::destroy_buffer(a, *buf, *alloc);
+            }
+        }
+        let mut stats: VmaTotalStatistics = core::mem::zeroed();
+        device::calculate_statistics(a, &mut stats);
+        device::destroy(a);
+    }
+}
+
+#[test]
+fn general_pool_vs_linear() {
+    let a = blender_allocator();
+    unsafe {
+        let mut bits = 0u32;
+        let mut find = VmaAllocationCreateInfo::default();
+        find.required_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        assert_eq!(
+            device::find_memory_type_index(a, 0b11, &find, &mut bits),
+            VK_SUCCESS
+        );
+        let pci = VmaPoolCreateInfo {
+            memory_type_index: bits,
+            flags: 0,
+            block_size: 1024 * 1024,
+            min_block_count: 1,
+            max_block_count: 4,
+            priority: 0.0,
+            min_allocation_alignment: 256,
+            p_memory_allocate_next: core::ptr::null_mut(),
+        };
+        let mut pool = core::ptr::null_mut();
+        assert_eq!(device::create_pool(a, &pci, &mut pool), VK_SUCCESS);
+        let mut aci = VmaAllocationCreateInfo::default();
+        aci.pool = pool;
+        let mut bufs = Vec::new();
+        for _ in 0..32 {
+            bufs.push(make_buffer(
+                a,
+                1024,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                &aci,
+                1,
+            ));
+        }
+        let mut pst = VmaStatistics::default();
+        device::get_pool_statistics(a, pool, &mut pst);
+        assert_eq!(pst.allocation_count, 32);
+        for (buf, alloc, _) in bufs {
+            device::destroy_buffer(a, buf, alloc);
+        }
+        device::destroy_pool(a, pool);
+        device::destroy(a);
+    }
+}
+
+#[test]
+fn safe_allocator_allocation_drop() {
+    let fns = fake_fns();
+    let mut ci: VmaAllocatorCreateInfo = unsafe { core::mem::zeroed() };
+    ci.physical_device = 1 as _;
+    ci.device = 2 as _;
+    ci.instance = 3 as _;
+    ci.p_vulkan_functions = &fns;
+    let a = unsafe { crate::safe::Allocator::new(&ci) }.expect("allocator");
+    let req = VkMemoryRequirements {
+        size: 256,
+        alignment: 16,
+        memory_type_bits: 0b11,
+    };
+    let mut create = VmaAllocationCreateInfo::default();
+    create.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    {
+        let x = a.allocate(&req, &create).expect("x");
+        let y = a.allocate(&req, &create).expect("y");
+        assert!(x.size() >= 256);
+        assert!(y.size() >= 256);
+        assert_ne!((x.offset(), x.as_raw()), (y.offset(), y.as_raw()));
+    }
+}

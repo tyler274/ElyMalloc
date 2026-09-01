@@ -250,6 +250,26 @@ int main(void) {
                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &gpu,
                  &verts[i], &vert_a[i]);
     }
+    /* Hundreds of extra buffer alloc/free (mesh-edit churn). */
+    {
+        VkBuffer churn[256];
+        VmaAllocation churn_a[256];
+        for (int i = 0; i < 256; i++) {
+            make_buf(a, (VkDeviceSize)(64 + i * 8), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &gpu,
+                     &churn[i], &churn_a[i]);
+        }
+        for (int i = 0; i < 256; i += 2) {
+            vmaDestroyBuffer(a, churn[i], churn_a[i]);
+            churn[i] = 0;
+            churn_a[i] = NULL;
+        }
+        for (int i = 0; i < 256; i += 2) {
+            make_buf(a, 128, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &gpu, &churn[i], &churn_a[i]);
+        }
+        for (int i = 0; i < 256; i++) {
+            vmaDestroyBuffer(a, churn[i], churn_a[i]);
+        }
+    }
     VkBuffer indices[48];
     VmaAllocation idx_a[48];
     for (int i = 0; i < 48; i++) {

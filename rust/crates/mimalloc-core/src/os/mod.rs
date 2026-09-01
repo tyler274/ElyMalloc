@@ -68,7 +68,6 @@ pub fn efault() -> ! {
 
 /// Owned anonymous mapping. `Drop` unmaps unless [`Mapping::leak`] hands the
 /// region to the page map / a page.
-#[allow(dead_code)]
 pub struct Mapping {
     ptr: NonNull<u8>,
     len: usize,
@@ -76,7 +75,6 @@ pub struct Mapping {
     leaked: bool,
 }
 
-#[allow(dead_code)]
 impl Mapping {
     /// Reserve+commit `size` bytes (rounded up by the backend).
     pub fn anon(size: usize) -> Option<Self> {
@@ -106,14 +104,23 @@ impl Mapping {
         })
     }
 
-    #[inline]
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.ptr.as_ptr()
+    /// Aligned map with explicit `prot` / extra mmap flags (arena reserve).
+    pub fn aligned_prot(size: usize, align: usize, prot: i32, extra_flags: i32) -> Option<Self> {
+        if size == 0 || align == 0 {
+            return None;
+        }
+        let p = unsafe { mmap_aligned_prot(size, align, prot, extra_flags) };
+        NonNull::new(p).map(|ptr| Self {
+            ptr,
+            len: size,
+            committed: (prot & (PROT_READ | PROT_WRITE)) != 0,
+            leaked: false,
+        })
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
-        self.len
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
     }
 
     /// Transfer ownership to the page map. The caller must later [`unmap`].

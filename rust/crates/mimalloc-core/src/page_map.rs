@@ -43,20 +43,20 @@ pub fn init() {
         return;
     }
     let bytes = L1_SIZE * core::mem::size_of::<*mut u8>();
-    unsafe {
-        let raw = os::mmap_anon(bytes);
-        if raw.is_null() {
-            os::abort();
+    let Some(map) = os::Mapping::anon(bytes) else {
+        os::abort();
+    };
+    let raw = map.as_ptr();
+    match L1.compare_exchange(
+        ptr::null_mut(),
+        raw as *mut AtomicPtr<u8>,
+        Ordering::Release,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {
+            let _ = map.leak();
         }
-        let _ = L1.compare_exchange(
-            ptr::null_mut(),
-            raw as *mut AtomicPtr<u8>,
-            Ordering::Release,
-            Ordering::Acquire,
-        );
-        if L1.load(Ordering::Acquire) != raw as *mut AtomicPtr<u8> {
-            os::munmap(raw, bytes);
-        }
+        Err(_) => {}
     }
 }
 
@@ -78,16 +78,16 @@ unsafe fn get_or_create_l2(l1_idx: usize) -> *mut AtomicPtr<Page> {
         return existing;
     }
     let bytes = L2_SIZE * core::mem::size_of::<*mut Page>();
-    let raw = os::mmap_anon(bytes);
-    if raw.is_null() {
+    let Some(map) = os::Mapping::anon(bytes) else {
         return ptr::null_mut();
-    }
+    };
+    let raw = map.as_ptr();
     match (*slot).compare_exchange(ptr::null_mut(), raw, Ordering::Release, Ordering::Acquire) {
-        Ok(_) => raw as *mut AtomicPtr<Page>,
-        Err(cur) => {
-            os::munmap(raw, bytes);
-            cur as *mut AtomicPtr<Page>
+        Ok(_) => {
+            let _ = map.leak();
+            raw as *mut AtomicPtr<Page>
         }
+        Err(cur) => cur as *mut AtomicPtr<Page>,
     }
 }
 

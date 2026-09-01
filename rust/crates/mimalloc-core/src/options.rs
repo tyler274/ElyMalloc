@@ -8,10 +8,11 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-pub const OPTION_COUNT: usize = 48;
+pub const OPTION_COUNT: usize = 49;
 
-/// Names matching `mi_option_e` in `include/mimalloc.h` (index 0 .. `_mi_option_last-1`).
-pub const NAMES: [&str; 47] = [
+/// Names matching `mi_option_e` in `include/mimalloc.h` (index 0 .. `_mi_option_last-1`),
+/// then rewrite-only [`crate::quarantine::OPTION_QUARANTINE`] / [`crate::quarantine::OPTION_ZERO_ON_FREE`].
+pub const NAMES: [&str; 49] = [
     "show_errors",
     "show_stats",
     "verbose",
@@ -59,6 +60,9 @@ pub const NAMES: [&str; 47] = [
     "minimal_purge_size",
     "arena_max_object_size",
     "arena_is_numa_local",
+    // Rewrite-only (not in C `mi_option_e`). Default 0 = off.
+    "quarantine",
+    "zero_on_free",
 ];
 
 static VALUES: [AtomicI64; OPTION_COUNT] = unsafe { core::mem::zeroed() };

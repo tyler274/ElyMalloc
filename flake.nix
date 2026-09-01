@@ -52,6 +52,7 @@
     in
     {
       overlays.default = final: prev: {
+        kani = final.callPackage ./rust/kani.nix { };
         mimalloc = final.callPackage ./rust/package.nix { };
         # Rebuild mold with the rewrite statically linked (nixpkgs mold
         # otherwise DT_NEEDEDs C libmimalloc-secure).
@@ -75,6 +76,7 @@
         {
           default = pkgs.mimalloc;
           mimalloc = pkgs.mimalloc;
+          kani = pkgs.kani;
           mold = pkgs.mold;
           mold-unwrapped = pkgs.mold-unwrapped;
           mimalloc-musl = pkgs.callPackage ./rust/package.nix {
@@ -195,6 +197,7 @@
               pkgs.pkgsMusl.stdenv.cc
               pkgs.hyperfine
               pkgs.perf
+              pkgs.kani
             ];
             shellHook = ''
               export JEMALLOC_SO="${pkgs.jemalloc}/lib/libjemalloc.so"

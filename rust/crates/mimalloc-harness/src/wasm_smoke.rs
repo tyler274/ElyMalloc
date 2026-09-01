@@ -139,6 +139,22 @@ pub fn run() -> Result<()> {
     if !text.contains('0') {
         bail!("smoke() returned: {text}");
     }
+    println!("==> wasmtime wasm32-unknown-unknown --invoke stress");
+    let out = Command::new(&wasmtime)
+        .args(["--invoke", "stress"])
+        .arg(&unknown)
+        .output()?;
+    if !out.status.success() {
+        bail!(
+            "stress() failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !text.contains('0') {
+        bail!("stress() returned: {text}");
+    }
     let st = Command::new(&wasmtime).arg(&unknown).status()?;
     if !st.success() {
         bail!("wasmtime unknown-unknown failed");

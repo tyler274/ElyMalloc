@@ -70,7 +70,7 @@ rustup target add wasm32-unknown-unknown wasm32-wasip1
 ./tests/wasm-smoke.sh
 ```
 
-`wasm-smoke.sh` (or `cargo run -p mimalloc-harness -- wasm-smoke`) builds a `#[global_allocator]` program for both wasm targets, asserts the module does not import libc `malloc`, runs it under `wasmtime`, and runs `mimalloc-core` unit tests on `wasm32-wasip1`.
+`wasm-smoke.sh` (or `cargo run -p mimalloc-harness -- wasm-smoke`) builds a `#[global_allocator]` program for both wasm targets, asserts the module does not import libc `malloc`, runs `smoke` and `stress` (sizes, realloc, calloc, aligned, churn, OOM; sequential only) under `wasmtime`, and runs `mimalloc-core` unit tests on `wasm32-wasip1`.
 
 ```rust
 use mimalloc_core::Mimalloc;
@@ -172,7 +172,7 @@ nix run .#live          # shell with the rewrite
 
 ## Secure mitigations
 
-Always on (inspired by C `-DMI_SECURE=FULL`): encoded free lists, padding canaries, slack-byte overflow checks (`0xDE`), double-free detection, randomized page free lists, guard pages around page metadata **and at the end of every mimalloc page**, and ASLR-style gaps between OS mappings. Encoded free-list next pointers use `ptr::addr` / `with_exposed_provenance_mut` rather than `as usize` / `as *mut`. Padding fill/compare uses SSE2 (x86_64) or NEON (aarch64). Lengths ≥ 64 bytes use AVX-512 (`AVX512F`+`AVX512BW`) when the CPU and OS enable ZMM state - including Zen 5 - otherwise SSE2. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`. Install both `libmimalloc.so.3` and `libmimalloc-secure.so.3` so programs that `DT_NEEDED` the secure SONAME (for example nixpkgs mold) can `LD_PRELOAD` or replace the C library.
+Always on (Graphene **light** / C `-DMI_SECURE=FULL`): encoded free lists, padding canaries with the lowest canary byte cleared, slack-byte overflow checks (`0xDE`), double-free detection, randomized page free lists, guard pages around page metadata **and at the end of every mimalloc page**, and ASLR-style gaps between OS mappings. Encoded free-list next pointers use `ptr::addr` / `with_exposed_provenance_mut` rather than `as usize` / `as *mut`. Padding fill/compare uses SSE2 (x86_64) or NEON (aarch64). Lengths ≥ 64 bytes use AVX-512 (`AVX512F`+`AVX512BW`) when the CPU and OS enable ZMM state - including Zen 5 - otherwise SSE2. Sampled object guard pages are off until `mi_theap_guarded_set_sample_rate`. Delayed-free quarantine (`mimalloc_quarantine`, KiB) and zero-on-free (`mimalloc_zero_on_free`) default to 0 (Scudo/Graphene-default would break compiler-preload). Install both `libmimalloc.so.3` and `libmimalloc-secure.so.3` so programs that `DT_NEEDED` the secure SONAME (for example nixpkgs mold) can `LD_PRELOAD` or replace the C library.
 
 Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features debug-fill` (off by default; it is always on in the debug profile).
 
@@ -182,20 +182,26 @@ Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features 
 
 ## Formal verification (Kani)
 
-`mimalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, and free-list `encode_addr`/`decode_addr` (integer roundtrip). Host `cargo test -p mimalloc-core` covers the same properties with fixed inputs. Kani is not in nixpkgs; install it yourself, then:
+`mimalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, free-list `encode_addr`/`decode_addr`, canary low-byte-zero vs the freed marker, a synthetic page `used + local_len` ghost, and the delayed-free quarantine ring. `vma-core` proves first-fit / coalesce on a fixed-size array twin of the free list (Kani + `BTreeMap` / `Vec` unwind is too heavy). Host `cargo test` covers the same properties with fixed inputs. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
+
+```
+nix develop          # cargo-kani on PATH (no cargo install)
+cd rust && ./tests/kani.sh
+# or: cargo kani -p mimalloc-core && cargo kani -p vma-core
+```
+
+Without the flake shell, install via rustup:
 
 ```
 cargo install --locked kani-verifier
 cargo kani setup
-./tests/kani.sh
-# or: cargo kani -p mimalloc-core
 ```
 
 Proofs stay on pure integer helpers (`addr` / `with_exposed_provenance_mut` for encoded free-list next pointers). SIMD fill/compare/copy (`core::arch` SSE2/NEON/AVX-512) is `cfg(not(kani))` so the verifier does not have to model vector instructions.
 
 ## Benchmarks
 
-Same C binary under `LD_PRELOAD` of each malloc (glibc, Rust `libmimalloc.so`, Rust `libmimalloc-secure.so`, C mimalloc `MI_SECURE=FULL`, jemalloc), plus `#[global_allocator]` via `mimalloc-bench`. Reports wall time (`CLOCK_MONOTONIC`) and user-mode instruction counts (`perf_event_open` `PERF_COUNT_HW_INSTRUCTIONS`; 0 if the kernel denies counters). `BENCH_N` divides iteration counts (default `1`).
+Writes `target/malloc-bench/results.csv` plus `ns.svg`, `instructions.svg`, and `index.html` (self-contained grouped bars; no matplotlib/plotters). Allocators: glibc, `rust`, `rust-secure`, `rust-quarantine` (`mimalloc_quarantine=64` KiB; default `rust` stays off), C mimalloc `MI_SECURE=FULL` when cmake works, jemalloc (`JEMALLOC_SO`), and optional `TCMALLOC_SO` / `HARDENED_MALLOC_SO`. Plus `#[global_allocator]` via `mimalloc-bench` (`rust-global`). Reports wall time (`CLOCK_MONOTONIC`) and user-mode instruction counts (`perf_event_open` `PERF_COUNT_HW_INSTRUCTIONS`; 0 if the kernel denies counters). `BENCH_N` divides iteration counts (default `1`).
 
 ```
 cd rust
@@ -205,4 +211,4 @@ cargo run --release -p mimalloc-bench
 nix build .#mimalloc   # installs $out/bin/mimalloc-bench
 ```
 
-`nix develop` provides `hyperfine` and `perf`. Set `HYPERFINE=1` to also run hyperfine on the C bench binary for each allocator.
+`nix develop` provides `hyperfine`, `perf`, and `cargo-kani` (Kani 0.67.0 release bundle). Set `HYPERFINE=1` to also run hyperfine on the C bench binary for each allocator.

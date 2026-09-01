@@ -46,7 +46,9 @@ unsafe fn meta_alloc() -> *mut Arena {
     let _g = LOCK.lock();
     let need = core::mem::size_of::<Arena>();
     if META_BUMP.is_null() || META_BUMP.add(need) > META_END {
-        let chunk = os::mmap_anon(META_CHUNK);
+        let chunk = os::Mapping::anon(META_CHUNK)
+            .map(|m| m.leak())
+            .unwrap_or(ptr::null_mut());
         if chunk.is_null() {
             return ptr::null_mut();
         }
@@ -82,17 +84,16 @@ pub unsafe fn reserve(
     } else {
         os::PROT_NONE
     };
-    let base = os::mmap_aligned_prot(size, SLICE_SIZE, prot, extra);
-    if base.is_null() {
+    let Some(map) = os::Mapping::aligned_prot(size, SLICE_SIZE, prot, extra) else {
         os::enomem();
         return ptr::null_mut();
-    }
+    };
     let a = meta_alloc();
     if a.is_null() {
-        os::munmap_ex(base, size, commit);
         os::enomem();
         return ptr::null_mut();
     }
+    let base = map.leak();
     (*a).magic = ARENA_MAGIC;
     (*a).exclusive = exclusive;
     (*a).committed = commit;

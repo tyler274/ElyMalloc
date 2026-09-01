@@ -14,6 +14,7 @@
 //! |--------|------|
 //! | [`types`] | `Vma*` structs/flags matching the C header |
 //! | [`device`] | Default pools, custom pools, dedicated blocks, buffer/image helpers |
+//! | [`safe`] | Owned [`safe::Allocator`] / [`safe::Allocation`] (C ABI stays in `vma-c`) |
 //! | [`virtual_block`] | Offset allocator with no `VkDeviceMemory` |
 //! | [`free_list`] | Coalescing free ranges (first-fit / best-fit / min-offset) |
 //! | [`load`] | Fill [`VmaVulkanFunctions`] from the create-info table or `libvulkan` |
@@ -30,7 +31,10 @@
 pub mod device;
 pub mod free_list;
 pub mod load;
+pub mod safe;
 pub mod types;
+#[cfg(any(kani, test))]
+mod verify;
 pub mod virtual_block;
 pub mod vk;
 

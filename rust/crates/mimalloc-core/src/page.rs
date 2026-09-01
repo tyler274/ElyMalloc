@@ -99,7 +99,7 @@ pub const DEBUG_FREED: u8 = 0xDF;
 pub const DEBUG_PADDING: u8 = 0xDE;
 const DEBUG_FILL_MAX: usize = 1024 * 1024;
 /// C `mi_ptr_encode_canary_freed`: bit 9 set so it cannot match a live canary.
-const CANARY_FREED: u32 = 0x00DEAD00;
+pub(crate) const CANARY_FREED: u32 = 0x00DEAD00;
 /// C `MI_BLOCK_TAG_GUARDED`: `block.next` of a sampled guarded allocation.
 const BLOCK_TAG_GUARDED: usize = usize::MAX;
 
@@ -256,7 +256,12 @@ unsafe fn map_page_memory(size: usize, align: usize, arena: *mut Arena) -> (*mut
             return (ptr::null_mut(), true);
         }
     }
-    (os::mmap_aligned(size, align), false)
+    (
+        os::Mapping::aligned(size, align)
+            .map(|m| m.leak())
+            .unwrap_or(ptr::null_mut()),
+        false,
+    )
 }
 
 unsafe fn unmap_page_memory(base: *mut u8, size: usize, from_arena: bool) {
@@ -706,9 +711,17 @@ pub fn padded_need(size: usize) -> usize {
     request_size(size).saturating_add(PADDING_SIZE)
 }
 
+/// Truncate an encoded pointer to the padding canary (lowest 9 bits cleared so
+/// the low byte is 0 - Graphene-style C-string overflow - and bit 8 cannot
+/// match [`CANARY_FREED`]).
+#[inline]
+pub(crate) fn encode_canary(enc: u32) -> u32 {
+    enc & 0xFFFF_FE00
+}
+
 #[inline]
 unsafe fn canary(page: *const Page, block: *mut u8) -> u32 {
-    (encode_ptr(page, block as *mut Block) as u32) & 0xFFFFFE00
+    encode_canary(encode_ptr(page, block as *mut Block) as u32)
 }
 
 unsafe fn padding_ptr(page: *mut Page, block: *mut u8) -> *mut Padding {

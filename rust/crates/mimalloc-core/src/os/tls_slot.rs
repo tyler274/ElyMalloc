@@ -3,7 +3,7 @@
 //! Do not use `#[thread_local]` for the heap pointer: glibc TLS init mallocs.
 
 use core::ffi::c_void;
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const UNSET: usize = usize::MAX;
@@ -43,6 +43,15 @@ impl TlsSlot {
         get_specific(k)
     }
 
+    /// Typed get. The slot stores a raw pointer (theap / subproc / quarantine ring).
+    ///
+    /// # Safety
+    /// The value must be a valid `*mut T` or null, written with [`set_non_null`].
+    #[inline]
+    pub unsafe fn get_non_null<T>(&self) -> Option<NonNull<T>> {
+        NonNull::new(self.get().cast())
+    }
+
     #[inline]
     pub unsafe fn set(&self, p: *mut c_void) {
         let k = self.key.load(Ordering::Acquire);
@@ -50,6 +59,15 @@ impl TlsSlot {
             return;
         }
         set_specific(k, p);
+    }
+
+    /// Typed set. `None` stores a null pointer.
+    ///
+    /// # Safety
+    /// Same as [`set`]: `p` must remain valid until overwritten or thread exit.
+    #[inline]
+    pub unsafe fn set_non_null<T>(&self, p: Option<NonNull<T>>) {
+        self.set(p.map(|n| n.as_ptr().cast()).unwrap_or(ptr::null_mut()));
     }
 
     #[inline]

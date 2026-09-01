@@ -7,6 +7,25 @@
 //! The C ABI lives in `mimalloc-c`. This crate is also a
 //! [`core::alloc::GlobalAlloc`] ([`Mimalloc`]) for `wasm32` and Rust programs.
 //!
+//! # Papers / other allocators
+//!
+//! Always-on mitigations are close to Graphene **light**: encoded free-list
+//! `next`, an 8-byte `{canary, delta}` trailer with the **lowest canary byte
+//! cleared** (C-string overflow; Graphene's leading `0` canary), slack fill
+//! `0xDE`, metadata + end-of-page `PROT_NONE`, randomized local free lists,
+//! and ASLR-style mmap gaps. Sampled object guards stay opt-in
+//! (`mi_theap_guarded_set_sample_rate`).
+//!
+//! The [mimalloc paper](https://www.microsoft.com/en-us/research/publication/mimalloc-free-list-sharding-in-action/)
+//! is the size-class / sharded free-list design this rewrite follows.
+//! Remote `free` into `thread_free` is the same idea as snmalloc's remote
+//! deallocation. A delayed-free **quarantine** (Scudo `quarantine_size_kb`,
+//! Graphene default / HUSHVAC, Cornucopia region quarantine) and
+//! **zero-on-free** are [`options`] (`quarantine` KiB, `zero_on_free`); both
+//! default to 0 so compiler-preload and world suites stay comparable to C.
+//! Mesh compaction and HUSHVAC physical-page detach are **not** implemented.
+//! No ARM MTE, CHERI, or Intel MPK.
+//!
 //! # Layout
 //!
 //! | Type | C | Role |
@@ -69,6 +88,7 @@ mod os;
 mod page;
 mod page_map;
 mod ptrx;
+mod quarantine;
 mod spin;
 pub mod stats;
 pub mod subproc;
@@ -118,7 +138,8 @@ pub fn is_init_done() -> bool {
 #[inline]
 pub fn align_up(x: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
-    (x + align - 1) & !(align - 1)
+    // `(align - 1)` first: `x + align` overflows when `x + (align - 1)` does not.
+    (x + (align - 1)) & !(align - 1)
 }
 
 /// Process init: OS page size, size-class table, page map, option defaults, `pthread_atfork`.
@@ -611,8 +632,9 @@ mod tests {
     fn manage_os_memory_as_arena() {
         unsafe {
             let size = 2 * 1024 * 1024;
-            let raw = crate::os::mmap_anon(size);
-            assert!(!raw.is_null());
+            let raw = crate::os::Mapping::anon(size)
+                .map(|m| m.leak())
+                .expect("mmap arena");
             let mut id: *mut crate::Arena = core::ptr::null_mut();
             assert!(alloc::manage_os_memory_ex(
                 raw, size, true, false, false, -1, true, &mut id
@@ -1171,6 +1193,39 @@ mod tests {
             for p in v {
                 alloc::free(p);
             }
+        }
+    }
+
+    #[test]
+    fn quarantine_and_zero_on_free_opt_in() {
+        struct Restore {
+            q: i64,
+            z: i64,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::options::set(crate::quarantine::OPTION_QUARANTINE, self.q);
+                crate::options::set(crate::quarantine::OPTION_ZERO_ON_FREE, self.z);
+            }
+        }
+        let _restore = Restore {
+            q: crate::options::get(crate::quarantine::OPTION_QUARANTINE),
+            z: crate::options::get(crate::quarantine::OPTION_ZERO_ON_FREE),
+        };
+        crate::options::set(crate::quarantine::OPTION_QUARANTINE, 64);
+        crate::options::set(crate::quarantine::OPTION_ZERO_ON_FREE, 1);
+        unsafe {
+            let p = alloc::malloc(32);
+            assert!(!p.is_null());
+            core::ptr::write_bytes(p, 0xAB, 32);
+            let addr = p as usize;
+            alloc::free(p);
+            alloc::free(addr as *mut u8);
+            let q = alloc::malloc(32);
+            assert!(!q.is_null());
+            assert_ne!(q as usize, addr);
+            alloc::free(q);
+            alloc::collect(true);
         }
     }
 }

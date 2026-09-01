@@ -15,6 +15,12 @@ pub extern "C" fn smoke() -> i32 {
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 #[no_mangle]
+pub extern "C" fn stress() -> i32 {
+    mimalloc_wasm_smoke::run_stress()
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[no_mangle]
 pub extern "C" fn _start() {
     if mimalloc_wasm_smoke::run() != 0 {
         core::arch::wasm32::unreachable();
@@ -27,6 +33,12 @@ fn main() {
     if rc != 0 {
         #[cfg(not(target_arch = "wasm32"))]
         eprintln!("mimalloc-wasm-smoke failed: {rc}");
+        std::process::exit(rc);
+    }
+    let rc = mimalloc_wasm_smoke::run_stress();
+    if rc != 0 {
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("mimalloc-wasm-smoke stress failed: {rc}");
         std::process::exit(rc);
     }
     println!("mimalloc-wasm-smoke ok");

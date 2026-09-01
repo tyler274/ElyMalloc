@@ -15,6 +15,7 @@ use crate::os;
 use crate::page::{self, PAGE_MAGIC};
 use crate::page_map;
 use crate::ptrx;
+use crate::quarantine;
 use crate::tls;
 use crate::{align_up, MAX_ALLOC, PADDING_SIZE, PTR_SIZE};
 use core::ffi::c_char;
@@ -43,7 +44,9 @@ unsafe fn bootstrap_alloc(size: usize) -> *mut u8 {
     }
     // Bump exhausted: a dedicated anonymous map (never goes through malloc).
     // `free` of these pointers is a no-op (not in the page map).
-    let raw = os::mmap_anon(size.max(os::page_size()));
+    let raw = os::Mapping::anon(size.max(os::page_size()))
+        .map(|m| m.leak())
+        .unwrap_or(ptr::null_mut());
     if raw.is_null() {
         os::enomem();
     }
@@ -171,6 +174,10 @@ pub unsafe fn free(p: *mut u8) {
         return;
     }
     crate::init();
+    if quarantine::contains(p) {
+        os::eagain();
+        return;
+    }
     let page = page_map::get(p);
     if page.is_null() {
         return;
@@ -181,8 +188,12 @@ pub unsafe fn free(p: *mut u8) {
     if !(*page).is_guarded() && !page::is_block_start(page, p) {
         return;
     }
+    let user = page::usable_size(page, p);
     if !page::check_free(page, p) {
         return;
+    }
+    if quarantine::zero_on_free() && user != 0 {
+        mem::fill(p, 0, user);
     }
     let usable = page::stat_size(page);
     crate::stats::malloc_sub(usable);
@@ -195,6 +206,37 @@ pub unsafe fn free(p: *mut u8) {
         page::destroy(page);
         return;
     }
+    match quarantine::push(p, user) {
+        quarantine::Insert::Duplicate => {
+            os::eagain();
+        }
+        quarantine::Insert::Bypass => recycle_block(page, p),
+        quarantine::Insert::BypassWith { evicted, n } => {
+            recycle_slots(&evicted[..n]);
+            recycle_block(page, p);
+        }
+        quarantine::Insert::Held { evicted, n } => {
+            recycle_slots(&evicted[..n]);
+        }
+    }
+}
+
+unsafe fn recycle_slots(slots: &[quarantine::Slot]) {
+    for s in slots {
+        if s.ptr == 0 {
+            continue;
+        }
+        let p = s.ptr as *mut u8;
+        let page = page_map::get(p);
+        if page.is_null() || (*page).magic != PAGE_MAGIC {
+            continue;
+        }
+        recycle_block(page, p);
+    }
+}
+
+unsafe fn recycle_block(page: *mut page::Page, p: *mut u8) {
+    let owner = (*page).heap.load(core::sync::atomic::Ordering::Acquire);
     let h = tls::default_theap();
     if owner == h && !h.is_null() {
         page::push_local(page, p);
@@ -208,6 +250,13 @@ pub unsafe fn free(p: *mut u8) {
             page::push_thread_free(page, p);
         }
     }
+}
+
+/// Recycle every delayed-free block on this thread (collect / thread exit).
+pub(crate) unsafe fn flush_quarantine() {
+    let mut buf = [quarantine::Slot { ptr: 0, size: 0 }; 32];
+    let n = quarantine::drain(&mut buf);
+    recycle_slots(&buf[..n]);
 }
 
 /// Byte-precise user size from the padding trailer (`mi_usable_size`).

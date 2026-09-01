@@ -10,3 +10,6 @@ name = "vma_core"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libc.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

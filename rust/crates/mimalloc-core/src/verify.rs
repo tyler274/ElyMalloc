@@ -2,11 +2,54 @@
 //!
 //! Proofs stay off the OS / SIMD paths (`mmap`, `core::arch`). Install Kani
 //! with `cargo install --locked kani-verifier && cargo-kani setup`, then
-//! `cargo kani -p mimalloc-core`. Kani is not in nixpkgs; `./tests/kani.sh`
-//! no-ops when the verifier is missing.
+//! `cargo kani -p mimalloc-core` (and `-p vma-core` for the free-list model).
+//! Kani is not in nixpkgs; `./tests/kani.sh` no-ops when the verifier is missing.
 
-use crate::page::{decode_addr, encode_addr, padded_need, request_size};
+use crate::page::{
+    decode_addr, encode_addr, encode_canary, padded_need, request_size, CANARY_FREED,
+};
 use crate::{align_up, bin, BIN_HUGE};
+
+/// Synthetic page accounting: after collect, `used + local_len == capacity`.
+#[derive(Clone, Copy)]
+struct GhostPage {
+    capacity: u32,
+    used: u32,
+    local_len: u32,
+}
+
+impl GhostPage {
+    fn new(capacity: u32) -> Self {
+        Self {
+            capacity,
+            used: 0,
+            local_len: capacity,
+        }
+    }
+
+    fn inv(&self) -> bool {
+        let sum = self.used as u64 + self.local_len as u64;
+        sum <= self.capacity as u64
+    }
+
+    fn pop(&mut self) -> bool {
+        if self.local_len == 0 {
+            return false;
+        }
+        self.local_len -= 1;
+        self.used += 1;
+        true
+    }
+
+    fn push(&mut self) -> bool {
+        if self.used == 0 {
+            return false;
+        }
+        self.used -= 1;
+        self.local_len += 1;
+        true
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -56,6 +99,27 @@ mod tests {
             let bin = bin::bin_for_size(size);
             assert!(bin >= 1 && bin <= BIN_HUGE, "size {size} -> bin {bin}");
         }
+    }
+
+    #[test]
+    fn canary_low_byte_zero_and_not_freed() {
+        for enc in [0u32, 1, 0xFF, 0x1FF, 0xABCD_EF01, u32::MAX] {
+            let c = encode_canary(enc);
+            assert_eq!(c & 0xFF, 0);
+            assert_ne!(c, CANARY_FREED);
+        }
+        assert_eq!(CANARY_FREED & 0x1FF, 0x100);
+    }
+
+    #[test]
+    fn ghost_page_push_pop() {
+        let mut p = GhostPage::new(8);
+        assert!(p.inv());
+        assert!(p.pop());
+        assert!(p.pop());
+        assert!(p.push());
+        assert_eq!(p.used + p.local_len, p.capacity);
+        assert!(p.inv());
     }
 }
 
@@ -108,5 +172,55 @@ mod kani_proofs {
         kani::assume(b <= 512);
         kani::assume(a <= b);
         assert!(bin::bin_for_size(a) <= bin::bin_for_size(b));
+    }
+
+    #[kani::proof]
+    fn canary_low_byte_zero() {
+        let enc: u32 = kani::any();
+        let c = encode_canary(enc);
+        assert_eq!(c & 0xFF, 0);
+        assert_ne!(c, CANARY_FREED);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn ghost_page_capacity() {
+        let cap: u32 = kani::any();
+        kani::assume(cap >= 1 && cap <= 8);
+        let mut p = GhostPage::new(cap);
+        let steps: u8 = kani::any();
+        kani::assume(steps <= 8);
+        for _ in 0..steps {
+            if kani::any() {
+                let _ = p.pop();
+            } else {
+                let _ = p.push();
+            }
+            assert!(p.inv());
+            assert!(p.used + p.local_len == p.capacity);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn quarantine_ring_insert_evict_dup() {
+        use crate::quarantine::{Insert, Ring};
+        let mut r = Ring::<4>::new();
+        let cap: usize = kani::any();
+        kani::assume(cap >= 4 && cap <= 32);
+        let a: usize = kani::any();
+        let b: usize = kani::any();
+        kani::assume(a != 0 && b != 0 && a != b);
+        match r.insert(a, 4, cap) {
+            Insert::Held { n, .. } => assert_eq!(n, 0),
+            _ => panic!("first insert must hold"),
+        }
+        match r.insert(a, 4, cap) {
+            Insert::Duplicate => {}
+            _ => panic!("duplicate"),
+        }
+        let _ = r.insert(b, 4, cap);
+        assert!(r.contains(a) || r.contains(b));
+        assert!(!r.contains(0));
     }
 }

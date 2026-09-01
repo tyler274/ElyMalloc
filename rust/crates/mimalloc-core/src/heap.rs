@@ -143,24 +143,22 @@ fn abandoned_table() -> *mut AtomicPtr<Page> {
     if !p.is_null() {
         return p;
     }
-    unsafe {
-        let bytes = BIN_COUNT * core::mem::size_of::<*mut Page>();
-        let raw = os::mmap_anon(bytes);
-        if raw.is_null() {
-            os::abort();
+    let bytes = BIN_COUNT * core::mem::size_of::<*mut Page>();
+    let Some(map) = os::Mapping::anon(bytes) else {
+        os::abort();
+    };
+    let raw = map.as_ptr();
+    match ABANDONED.compare_exchange(
+        ptr::null_mut(),
+        raw as *mut AtomicPtr<Page>,
+        Ordering::Release,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {
+            let _ = map.leak();
+            raw as *mut AtomicPtr<Page>
         }
-        match ABANDONED.compare_exchange(
-            ptr::null_mut(),
-            raw as *mut AtomicPtr<Page>,
-            Ordering::Release,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => raw as *mut AtomicPtr<Page>,
-            Err(cur) => {
-                os::munmap(raw, bytes);
-                cur
-            }
-        }
+        Err(cur) => cur,
     }
 }
 
@@ -181,7 +179,9 @@ unsafe fn meta_alloc() -> *mut ThreadHeap {
     }
     let need = core::mem::size_of::<ThreadHeap>();
     if META_BUMP.is_null() || META_BUMP.add(need) > META_END {
-        let chunk = os::mmap_anon(META_CHUNK);
+        let chunk = os::Mapping::anon(META_CHUNK)
+            .map(|m| m.leak())
+            .unwrap_or(ptr::null_mut());
         if chunk.is_null() {
             return ptr::null_mut();
         }
@@ -213,7 +213,9 @@ unsafe fn alloc_heap_obj() -> *mut Heap {
     }
     let need = core::mem::size_of::<Heap>();
     if HEAP_BUMP.is_null() || HEAP_BUMP.add(need) > HEAP_END {
-        let chunk = os::mmap_anon(META_CHUNK);
+        let chunk = os::Mapping::anon(META_CHUNK)
+            .map(|m| m.leak())
+            .unwrap_or(ptr::null_mut());
         if chunk.is_null() {
             return ptr::null_mut();
         }
@@ -995,6 +997,7 @@ pub unsafe fn abandon(h: *mut ThreadHeap) {
     if h.is_null() {
         return;
     }
+    crate::alloc::flush_quarantine();
     for bin in 0..BIN_COUNT {
         let mut page = (*h).lists[bin];
         (*h).lists[bin] = ptr::null_mut();
@@ -1139,17 +1142,16 @@ unsafe fn visit_page_blocks(
     let mut stack = [0u64; WORDS];
     let need_words = cap.div_ceil(64);
     let bits: *mut u64;
-    let mut mapped: *mut u8 = ptr::null_mut();
-    let mut mapped_bytes = 0usize;
+    let mut mapping: Option<os::Mapping> = None;
     if need_words <= WORDS {
         bits = stack.as_mut_ptr();
     } else {
-        mapped_bytes = need_words.saturating_mul(core::mem::size_of::<u64>());
-        mapped = os::mmap_anon(mapped_bytes);
-        if mapped.is_null() {
+        let mapped_bytes = need_words.saturating_mul(core::mem::size_of::<u64>());
+        mapping = os::Mapping::anon(mapped_bytes);
+        let Some(ref m) = mapping else {
             return false;
-        }
-        bits = mapped as *mut u64;
+        };
+        bits = m.as_ptr() as *mut u64;
     }
 
     let mut b = (*page).local_free;
@@ -1175,9 +1177,7 @@ unsafe fn visit_page_blocks(
             break;
         }
     }
-    if !mapped.is_null() {
-        os::munmap(mapped, mapped_bytes);
-    }
+    drop(mapping);
     ok
 }
 
@@ -1281,6 +1281,9 @@ pub unsafe fn heap_visit_abandoned_blocks(
 pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
     if h.is_null() {
         return;
+    }
+    if force {
+        crate::alloc::flush_quarantine();
     }
     let hb = (*h).heartbeat.fetch_add(1, Ordering::Relaxed) + 1;
     crate::hooks::deferred_free(force, hb);

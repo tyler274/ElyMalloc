@@ -25,7 +25,7 @@ mod native {
     use crate::os::TlsSlot;
     use crate::spin::SpinLock;
     use core::ffi::c_void;
-    use core::ptr;
+    use core::ptr::{self, NonNull};
     use core::sync::atomic::Ordering;
 
     static KEY: TlsSlot = TlsSlot::new();
@@ -102,17 +102,15 @@ mod native {
             return ptr::null_mut();
         }
         ensure_key();
-        let mut h = KEY.get() as *mut ThreadHeap;
-        if !h.is_null() {
-            return h;
+        if let Some(h) = KEY.get_non_null::<ThreadHeap>() {
+            return h.as_ptr();
         }
         loop {
             if CREATE_OWNER.load(Ordering::Acquire) == me {
                 return ptr::null_mut();
             }
-            h = KEY.get() as *mut ThreadHeap;
-            if !h.is_null() {
-                return h;
+            if let Some(h) = KEY.get_non_null::<ThreadHeap>() {
+                return h.as_ptr();
             }
             match CREATE_OWNER.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
@@ -126,24 +124,22 @@ mod native {
             }
         }
         let _g = CreateGuard;
-        h = heap::create();
+        let h = heap::create();
         if !h.is_null() {
-            KEY.set(h as *mut c_void);
+            KEY.set_non_null(NonNull::new(h));
         }
         h
     }
 
     pub unsafe fn default_theap() -> *mut ThreadHeap {
         if DEFAULT_KEY.is_ready() {
-            let t = DEFAULT_KEY.get() as *mut ThreadHeap;
-            if !t.is_null() {
-                return t;
+            if let Some(t) = DEFAULT_KEY.get_non_null::<ThreadHeap>() {
+                return t.as_ptr();
             }
         } else {
             ensure_default_key();
-            let t = DEFAULT_KEY.get() as *mut ThreadHeap;
-            if !t.is_null() {
-                return t;
+            if let Some(t) = DEFAULT_KEY.get_non_null::<ThreadHeap>() {
+                return t.as_ptr();
             }
         }
         thread_heap()
@@ -152,7 +148,7 @@ mod native {
     pub unsafe fn set_default_theap(theap: *mut ThreadHeap) -> *mut ThreadHeap {
         let old = default_theap();
         ensure_default_key();
-        DEFAULT_KEY.set(theap as *mut c_void);
+        DEFAULT_KEY.set_non_null(NonNull::new(theap));
         old
     }
 
@@ -166,12 +162,18 @@ mod native {
         if !KEY.is_ready() {
             return;
         }
-        let h = KEY.get() as *mut ThreadHeap;
-        KEY.set(ptr::null_mut());
+        let h = KEY
+            .get_non_null::<ThreadHeap>()
+            .map(|n| n.as_ptr())
+            .unwrap_or(ptr::null_mut());
+        KEY.set_non_null::<ThreadHeap>(None);
         if DEFAULT_KEY.is_ready() {
-            let d = DEFAULT_KEY.get() as *mut ThreadHeap;
+            let d = DEFAULT_KEY
+                .get_non_null::<ThreadHeap>()
+                .map(|n| n.as_ptr())
+                .unwrap_or(ptr::null_mut());
             if d == h {
-                DEFAULT_KEY.set(ptr::null_mut());
+                DEFAULT_KEY.set_non_null::<ThreadHeap>(None);
             }
         }
         heap::abandon(h);

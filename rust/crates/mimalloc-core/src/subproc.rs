@@ -9,7 +9,7 @@ use crate::heap::{self, Heap};
 use crate::os;
 use crate::spin::SpinLock;
 use crate::stats::{self, AllocStats, Stats};
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub const SUBPROC_MAGIC: u32 = 0x4D495350; // 'MISP'
@@ -49,7 +49,9 @@ unsafe fn meta_alloc() -> *mut Subproc {
     }
     let need = core::mem::size_of::<Subproc>();
     if META_BUMP.is_null() || META_BUMP.add(need) > META_END {
-        let chunk = os::mmap_anon(META_CHUNK);
+        let chunk = os::Mapping::anon(META_CHUNK)
+            .map(|m| m.leak())
+            .unwrap_or(ptr::null_mut());
         if chunk.is_null() {
             return ptr::null_mut();
         }
@@ -115,9 +117,10 @@ pub unsafe fn current() -> SubprocId {
     #[cfg(not(target_arch = "wasm32"))]
     {
         if CURRENT_SLOT.is_ready() {
-            let p = CURRENT_SLOT.get() as *mut Subproc;
-            if !p.is_null() && (*p).magic == SUBPROC_MAGIC {
-                return SubprocId { ptr: p };
+            if let Some(p) = CURRENT_SLOT.get_non_null::<Subproc>() {
+                if (*p.as_ptr()).magic == SUBPROC_MAGIC {
+                    return SubprocId { ptr: p.as_ptr() };
+                }
             }
         }
         return main();
@@ -161,8 +164,12 @@ pub unsafe fn destroy(id: SubprocId) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         ensure_key();
-        if CURRENT_SLOT.get() as *mut Subproc == s {
-            CURRENT_SLOT.set(ptr::null_mut());
+        let cur = CURRENT_SLOT
+            .get_non_null::<Subproc>()
+            .map(|n| n.as_ptr())
+            .unwrap_or(ptr::null_mut());
+        if cur == s {
+            CURRENT_SLOT.set_non_null::<Subproc>(None);
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -186,7 +193,7 @@ pub unsafe fn add_current_thread(id: SubprocId) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         ensure_key();
-        CURRENT_SLOT.set(s as *mut core::ffi::c_void);
+        CURRENT_SLOT.set_non_null(NonNull::new(s));
     }
     #[cfg(target_arch = "wasm32")]
     {
