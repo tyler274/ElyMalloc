@@ -248,7 +248,12 @@ pub unsafe fn block_set_next(page: *mut Page, block: *mut Block, next: *mut Bloc
 unsafe fn map_page_memory(size: usize, align: usize, arena: *mut Arena) -> (*mut u8, bool) {
     if !arena.is_null() {
         let p = arena::alloc(arena, size, align);
-        return (p, true);
+        if !p.is_null() {
+            return (p, true);
+        }
+        if arena::is_valid(arena) && (*arena).exclusive {
+            return (ptr::null_mut(), true);
+        }
     }
     (os::mmap_aligned(size, align), false)
 }

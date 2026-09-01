@@ -119,8 +119,8 @@ pub fn align_up(x: usize, align: usize) -> usize {
 
 /// Process init: OS page size, size-class table, page map, option defaults, `pthread_atfork`.
 ///
-/// Idempotent and re-entrant. Allocation during TLS key creation uses the
-/// bootstrap bump in [`alloc`] so we never recurse into `mmap` via malloc.
+/// Idempotent and re-entrant. Nested allocation during init / TLS key
+/// creation / first thread-heap setup uses the bootstrap bump in [`alloc`].
 pub fn init() {
     if INIT_DONE.load(Ordering::Acquire) {
         return;
@@ -129,15 +129,18 @@ pub fn init() {
     if INIT_DONE.load(Ordering::Acquire) {
         return;
     }
+    let me = os::gettid();
+    tls::INIT_OWNER.store(me, Ordering::Release);
+    tls::BOOTSTRAP_TID.store(me, Ordering::Release);
     tls::IN_BOOTSTRAP.store(true, Ordering::Release);
-    tls::BOOTSTRAP_TID.store(os::gettid(), Ordering::Release);
     os::init();
     bin::init_bin_sizes();
     page_map::init();
     options::init();
     tls::register_atfork();
-    tls::BOOTSTRAP_TID.store(0, Ordering::Release);
     tls::IN_BOOTSTRAP.store(false, Ordering::Release);
+    tls::BOOTSTRAP_TID.store(0, Ordering::Release);
+    tls::INIT_OWNER.store(0, Ordering::Release);
     INIT_DONE.store(true, Ordering::Release);
 }
 
@@ -150,6 +153,7 @@ pub(crate) unsafe fn fork_child() {
     INIT_LOCK.force_unlock();
     tls::force_unlock();
     heap::force_unlock_all();
+    os::force_unlock();
 }
 
 pub use alloc::{
@@ -976,5 +980,63 @@ mod tests {
             crate::collect_all(true);
             alloc::collect_reduce(0);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn many_threads_small_malloc_is_not_null() {
+        use std::thread;
+        let mut joins = Vec::new();
+        for _ in 0..32 {
+            joins.push(thread::spawn(|| unsafe {
+                let mut ptrs = Vec::new();
+                for i in 0..256 {
+                    let p = alloc::malloc(16 + (i % 64));
+                    assert!(!p.is_null(), "small malloc returned null");
+                    core::ptr::write_bytes(p, 0x5A, 16);
+                    ptrs.push(p);
+                }
+                for p in ptrs {
+                    alloc::free(p);
+                }
+            }));
+        }
+        for j in joins {
+            j.join().expect("worker panicked");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn thread_exit_dtor_can_malloc() {
+        use std::cell::Cell;
+        use std::thread;
+
+        struct LateAlloc;
+        impl Drop for LateAlloc {
+            fn drop(&mut self) {
+                unsafe {
+                    let p = alloc::malloc(64);
+                    assert!(!p.is_null(), "malloc in thread dtor returned null");
+                    core::ptr::write_bytes(p, 0x11, 64);
+                    alloc::free(p);
+                    let q = alloc::malloc(8);
+                    assert!(!q.is_null());
+                    alloc::free(q);
+                }
+            }
+        }
+
+        std::thread_local!(static LATE: Cell<Option<LateAlloc>> = const { Cell::new(None) });
+        thread::spawn(|| {
+            LATE.with(|c| c.set(Some(LateAlloc)));
+            unsafe {
+                let p = alloc::malloc(32);
+                assert!(!p.is_null());
+                alloc::free(p);
+            }
+        })
+        .join()
+        .expect("dtor thread panicked");
     }
 }

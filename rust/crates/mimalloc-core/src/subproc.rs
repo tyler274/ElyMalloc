@@ -102,18 +102,26 @@ fn ensure_key() -> libc::pthread_key_t {
     if k != usize::MAX {
         return k as libc::pthread_key_t;
     }
-    let _g = LOCK.lock();
-    let k = CURRENT_KEY.load(Ordering::Acquire);
-    if k != usize::MAX {
-        return k as libc::pthread_key_t;
-    }
     let mut key: libc::pthread_key_t = 0;
-    unsafe {
-        if libc::pthread_key_create(&mut key, None) != 0 {
-            os::abort();
+    {
+        let _g = LOCK.lock();
+        let k = CURRENT_KEY.load(Ordering::Acquire);
+        if k != usize::MAX {
+            return k as libc::pthread_key_t;
         }
+        crate::tls::IN_BOOTSTRAP.store(true, Ordering::Release);
+        crate::tls::BOOTSTRAP_TID.store(os::gettid(), Ordering::Release);
+        unsafe {
+            if libc::pthread_key_create(&mut key, None) != 0 {
+                crate::tls::BOOTSTRAP_TID.store(0, Ordering::Release);
+                crate::tls::IN_BOOTSTRAP.store(false, Ordering::Release);
+                os::abort();
+            }
+        }
+        crate::tls::BOOTSTRAP_TID.store(0, Ordering::Release);
+        crate::tls::IN_BOOTSTRAP.store(false, Ordering::Release);
+        CURRENT_KEY.store(key as usize, Ordering::Release);
     }
-    CURRENT_KEY.store(key as usize, Ordering::Release);
     key
 }
 
@@ -121,10 +129,12 @@ fn ensure_key() -> libc::pthread_key_t {
 pub unsafe fn current() -> SubprocId {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let key = ensure_key();
-        let p = libc::pthread_getspecific(key) as *mut Subproc;
-        if !p.is_null() && (*p).magic == SUBPROC_MAGIC {
-            return SubprocId { ptr: p };
+        let k = CURRENT_KEY.load(Ordering::Acquire);
+        if k != usize::MAX {
+            let p = libc::pthread_getspecific(k as libc::pthread_key_t) as *mut Subproc;
+            if !p.is_null() && (*p).magic == SUBPROC_MAGIC {
+                return SubprocId { ptr: p };
+            }
         }
         return main();
     }

@@ -4,7 +4,7 @@
 //! page map, checks padding, then either `push_local` (same thread) or
 //! `push_thread_free`.
 //!
-//! During TLS key creation, [`malloc`] uses a static 64 KiB bump so libc
+//! During TLS key creation, [`malloc`] uses a static 256 KiB bump so libc
 //! cannot recurse into us (`IN_BOOTSTRAP`). `malloc(0)` still returns a unique
 //! non-null block. `realloc(p, 0)` frees `p` and returns a fresh `malloc(0)`.
 
@@ -21,7 +21,7 @@ use core::ffi::c_char;
 use core::ptr::{self, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const BOOT_SIZE: usize = 64 * 1024;
+const BOOT_SIZE: usize = 256 * 1024;
 static mut BOOT_MEM: [u8; BOOT_SIZE] = [0; BOOT_SIZE];
 static BOOT_POS: AtomicUsize = AtomicUsize::new(0);
 
@@ -32,7 +32,7 @@ unsafe fn bootstrap_alloc(size: usize) -> *mut u8 {
         let aligned = crate::align_up(pos, 16);
         let new_pos = aligned.saturating_add(size);
         if new_pos > BOOT_SIZE {
-            return ptr::null_mut();
+            break;
         }
         if BOOT_POS
             .compare_exchange_weak(pos, new_pos, Ordering::AcqRel, Ordering::Relaxed)
@@ -41,6 +41,13 @@ unsafe fn bootstrap_alloc(size: usize) -> *mut u8 {
             return addr_of_mut!(BOOT_MEM).cast::<u8>().add(aligned);
         }
     }
+    // Bump exhausted: a dedicated anonymous map (never goes through malloc).
+    // `free` of these pointers is a no-op (not in the page map).
+    let raw = os::mmap_anon(size.max(os::page_size()));
+    if raw.is_null() {
+        os::enomem();
+    }
+    raw
 }
 
 /// Process init (also called from the first `malloc`).
@@ -64,10 +71,10 @@ unsafe fn heap() -> *mut heap::ThreadHeap {
 /// after the user size is not part of the usable range.
 #[inline]
 pub unsafe fn malloc(size: usize) -> *mut u8 {
+    if tls::in_recursive_setup() {
+        return bootstrap_alloc(size);
+    }
     if tls::IN_BOOTSTRAP.load(Ordering::Acquire) {
-        if tls::BOOTSTRAP_TID.load(Ordering::Acquire) == crate::os::gettid() {
-            return bootstrap_alloc(size);
-        }
         while !crate::is_init_done() {
             core::hint::spin_loop();
         }
@@ -211,6 +218,19 @@ pub fn good_size(size: usize) -> usize {
 
 /// `mi_malloc_aligned`: `align` must be a power of two.
 pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
+    if tls::in_recursive_setup() {
+        let align = align.max(16);
+        if !align.is_power_of_two() {
+            os::einval();
+            return ptr::null_mut();
+        }
+        let total = size.saturating_add(align);
+        let raw = bootstrap_alloc(total);
+        if raw.is_null() {
+            return ptr::null_mut();
+        }
+        return crate::align_up(raw as usize, align) as *mut u8;
+    }
     crate::init();
     if align == 0 || !align.is_power_of_two() {
         os::einval();

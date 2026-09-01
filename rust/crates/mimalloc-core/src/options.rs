@@ -72,7 +72,7 @@ pub fn init() {
     set(5, 1); // purge_decommits
     set(15, 10); // purge_delay
     set(18, 100); // os_tag
-    set(32, 1000); // guarded_sample_rate
+    set(32, 0); // guarded_sample_rate (C default 0 unless MI_GUARDED)
     set(34, 10000); // generic_collect
     set(36, 2); // page_full_retain
     set(37, 4); // page_max_candidates

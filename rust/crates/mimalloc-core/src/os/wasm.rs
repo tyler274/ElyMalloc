@@ -139,3 +139,6 @@ pub unsafe fn unprotect(_p: *mut u8, _size: usize) -> bool {
 pub unsafe fn commit(_p: *mut u8, _size: usize) -> bool {
     true
 }
+
+#[allow(dead_code)]
+pub unsafe fn force_unlock() {}

@@ -756,7 +756,10 @@ pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
         return ptr::null_mut();
     }
     if should_guard(th, size) {
-        return malloc_guarded(th, size, 16);
+        let p = malloc_guarded(th, size, 16);
+        if !p.is_null() {
+            return p;
+        }
     }
     let need = page::padded_need(size);
     let bin = bin::bin_for_size(need);
@@ -784,7 +787,10 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
         return ptr::null_mut();
     }
     if align < SLICE_SIZE && should_guard(th, size) {
-        return malloc_guarded(th, size, align);
+        let p = malloc_guarded(th, size, align);
+        if !p.is_null() {
+            return p;
+        }
     }
     if align >= SLICE_SIZE {
         return page::finish_alloc(
@@ -972,6 +978,20 @@ pub unsafe fn abandon(h: *mut ThreadHeap) {
             }
             page = next;
         }
+    }
+    let mut page = (*h).huge;
+    (*h).huge = ptr::null_mut();
+    while !page.is_null() {
+        let next = (*page).next;
+        (*page).next = ptr::null_mut();
+        (*page).prev = ptr::null_mut();
+        if (*page).used == 0 {
+            page::destroy(page);
+        } else {
+            (*page).heap.store(ptr::null_mut(), Ordering::Release);
+            (*page).set_abandoned(true);
+        }
+        page = next;
     }
     meta_free(h);
 }
