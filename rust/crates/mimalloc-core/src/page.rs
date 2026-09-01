@@ -1,10 +1,9 @@
 //! Mimalloc pages: one size class, local + concurrent free lists (C `page.c`).
 //!
 //! A *page* is a 64 KiB / 512 KiB / 4 MiB mapping (or a singleton huge block)
-//! holding equal-sized objects. A `PROT_NONE` guard sits at the end of
-//! each page (C `MI_SECURE>=5`). Encoded free lists and padding canaries
-//! cover metadata / overflow without extra lead/mid `mprotect`s (those
-//! split a 4 MiB segment into many VMAs and made `mmap` fail under KWin).
+//! holding equal-sized objects. Metadata sits in the mapping behind OS
+//! `PROT_NONE` guard pages (C `MI_SECURE` / `MI_SECURE=FULL`): lead and mid
+//! around the page header, plus an end-of-page guard (`MI_SECURE>=5`).
 //!
 //! # Free lists
 //!
@@ -280,9 +279,7 @@ fn block_align(block_size: usize) -> usize {
     po2.max(16)
 }
 
-/// `[Page][blocks…][end guard]` - C `MI_SECURE>=5` end-of-page guard.
-/// Lead/mid OS-page `mprotect`s are omitted so a 4 MiB segment stays one VMA
-/// aside from the end guards.
+/// `[lead guard][Page][mid guard][blocks…][end guard]` - C `MI_SECURE` / `MI_SECURE=FULL`.
 fn meta_prefix(block_align: usize) -> (usize, usize, usize) {
     let os = os::page_size();
     let lead = os;
@@ -297,9 +294,10 @@ fn end_guard_size() -> usize {
     os::page_size()
 }
 
-unsafe fn install_meta_guards(_base: *mut u8, _lead: usize, _meta: usize) {
-    // C `MI_SECURE>=5` only guards the end of the page. Lead/mid `mprotect`
-    // here split every 64 KiB slice (~5 VMAs/page) and exhausted maps.
+unsafe fn install_meta_guards(base: *mut u8, lead: usize, meta: usize) {
+    let os = os::page_size();
+    let _ = os::protect(base, os);
+    let _ = os::protect(base.add(lead + meta), os);
 }
 
 unsafe fn install_end_guard(base: *mut u8, map_size: usize) {
@@ -396,7 +394,7 @@ unsafe fn init_local_free(page: *mut Page, area: *mut u8, bsize: usize, capacity
 
 /// Allocate a page of `map_size` bytes holding equal `block_size` blocks.
 ///
-/// Mapping: `[Page header][blocks…][end PROT_NONE]`.
+/// Mapping: `[lead PROT_NONE][Page][mid PROT_NONE][blocks…][end PROT_NONE]`.
 /// Registers every 64 KiB slice of `map_base..+map_size` in the page map.
 pub unsafe fn create(block_size: usize, map_size: usize, arena: *mut Arena) -> *mut Page {
     let align = block_align(block_size);

@@ -805,17 +805,23 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn metadata_sits_in_the_rw_mapping() {
+    fn metadata_guard_page_is_inaccessible() {
         unsafe {
             let p = alloc::malloc(32);
             assert!(!p.is_null());
             let page = crate::page_map::get(p);
             assert!(!page.is_null());
             let base = (*page).map_base as usize;
-            let hdr = prot_at(base).expect("map_base in maps");
+            let os = crate::os::page_size();
+            let guard = prot_at(base).expect("map_base in maps");
             assert!(
-                hdr.contains('r') && hdr.contains('w'),
-                "page header should be RW (no lead mprotect), got {hdr}"
+                !guard.contains('r') && !guard.contains('w'),
+                "leading meta guard should be PROT_NONE, got {guard}"
+            );
+            let meta = prot_at(base + os).expect("page header in maps");
+            assert!(
+                meta.contains('r') && meta.contains('w'),
+                "page header should be RW, got {meta}"
             );
             alloc::free(p);
         }
