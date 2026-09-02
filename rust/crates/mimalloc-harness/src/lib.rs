@@ -37,6 +37,7 @@ pub mod process;
 pub mod projects;
 pub mod python;
 pub mod run;
+#[cfg(unix)]
 pub mod vma;
 pub mod wasm;
 pub mod wasm_smoke;

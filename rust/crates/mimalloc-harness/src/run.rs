@@ -32,6 +32,7 @@ pub fn run() -> Result<()> {
         crate::wasm_smoke::run()?;
     }
     if !env_is_one("SKIP_VMA") {
+        #[cfg(unix)]
         crate::vma::run()?;
     }
 

@@ -205,6 +205,11 @@ pub use stats::{self as mi_stats, Stats};
 pub use subproc::{self as mi_subproc, Subproc, SubprocId};
 pub use tls::thread_done;
 
+/// Abort without allocating. Used by the cdylib panic handler.
+pub fn abort() -> ! {
+    os::abort()
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -888,12 +893,19 @@ mod tests {
             assert!(!page.is_null());
             let base = (*page).map_base as usize;
             let os = crate::os::page_size();
-            let guard = prot_at(base).expect("map_base in maps");
+            // qemu-user's /proc/self/maps is the host process; skip there.
+            let Some(guard) = prot_at(base) else {
+                alloc::free(p);
+                return;
+            };
             assert!(
                 !guard.contains('r') && !guard.contains('w'),
                 "leading meta guard should be PROT_NONE, got {guard}"
             );
-            let meta = prot_at(base + os).expect("page header in maps");
+            let Some(meta) = prot_at(base + os) else {
+                alloc::free(p);
+                return;
+            };
             assert!(
                 meta.contains('r') && meta.contains('w'),
                 "page header should be RW, got {meta}"
@@ -912,7 +924,10 @@ mod tests {
             assert!(!page.is_null());
             let os = crate::os::page_size();
             let end = (*page).map_base as usize + (*page).map_size - os;
-            let guard = prot_at(end).expect("end guard in maps");
+            let Some(guard) = prot_at(end) else {
+                alloc::free(p);
+                return;
+            };
             assert!(
                 !guard.contains('r') && !guard.contains('w'),
                 "end-of-page guard should be PROT_NONE, got {guard}"

@@ -37,6 +37,11 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use mimalloc_core::alloc as mi;
 
+// no_std MSVC cdylibs do not pull in the CRT; `strlen` / `_errno` live in ucrt.
+#[cfg(all(windows, target_env = "msvc"))]
+#[link(name = "ucrt")]
+extern "C" {}
+
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
@@ -49,7 +54,7 @@ fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
 pub extern "C" fn rust_eh_personality() {}
 
 fn mimalloc_core_abort() -> ! {
-    unsafe { libc::_exit(1) }
+    mimalloc_core::abort()
 }
 
 unsafe fn set_enomem() {
@@ -2304,7 +2309,7 @@ static INIT: extern "C" fn() = mi_ctor;
 #[link_section = ".CRT$XCU"]
 static INIT: extern "C" fn() = mi_ctor;
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+#[cfg(not(any(all(target_os = "linux", target_env = "gnu"), windows)))]
 extern "C" fn process_done_atexit() {
     unsafe {
         mi_process_done();
@@ -2335,7 +2340,7 @@ extern "C" fn mi_ctor() {
             )
         };
     }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    #[cfg(all(not(all(target_os = "linux", target_env = "gnu")), not(windows)))]
     {
         let _ = unsafe { libc::atexit(process_done_atexit) };
     }
@@ -2348,8 +2353,11 @@ static TLS_CB: unsafe extern "system" fn(*mut c_void, u32, *mut c_void) = tls_ca
 
 #[cfg(windows)]
 unsafe extern "system" fn tls_callback(_h: *mut c_void, reason: u32, _reserved: *mut c_void) {
+    const DLL_PROCESS_DETACH: u32 = 0;
     const DLL_THREAD_DETACH: u32 = 3;
     if reason == DLL_THREAD_DETACH {
         mimalloc_core::thread_done();
+    } else if reason == DLL_PROCESS_DETACH {
+        mi_process_done();
     }
 }

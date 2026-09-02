@@ -10,6 +10,14 @@
 #include <unistd.h>
 #include "mimalloc.h"
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#define MI_TEST_SLICE_SHIFT 17
+#else
+#define MI_TEST_SLICE_SHIFT 16
+#endif
+#define MI_TEST_SLICE_MASK ~(((uintptr_t)1 << MI_TEST_SLICE_SHIFT) - 1)
+#define MI_TEST_SLICE_LAST (((uintptr_t)1 << MI_TEST_SLICE_SHIFT) - 1)
+
 static void die(const char* msg) {
   fprintf(stderr, "secure test failed: %s\n", msg);
   exit(1);
@@ -116,7 +124,7 @@ int main(void) {
     if (p == NULL) {
       die("malloc4");
     }
-    uintptr_t slice = (uintptr_t)p & ~((uintptr_t)0xFFFF);
+    uintptr_t slice = (uintptr_t)p & MI_TEST_SLICE_MASK;
     pid_t pid = fork();
     if (pid < 0) {
       die("fork guard");
@@ -138,13 +146,13 @@ int main(void) {
     if (p == NULL) {
       die("malloc endguard");
     }
-    uintptr_t slice = (uintptr_t)p & ~((uintptr_t)0xFFFF);
+    uintptr_t slice = (uintptr_t)p & MI_TEST_SLICE_MASK;
     pid_t pid = fork();
     if (pid < 0) {
       die("fork endguard");
     }
     if (pid == 0) {
-      volatile char c = *(volatile char*)(slice + 0xFFFFu);
+      volatile char c = *(volatile char*)(slice + MI_TEST_SLICE_LAST);
       (void)c;
       _exit(2);
     }

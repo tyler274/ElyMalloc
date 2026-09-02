@@ -57,7 +57,16 @@ fn main() {
         Cmd::Projects => mimalloc_harness::projects::run(),
         Cmd::Python => mimalloc_harness::python::run(),
         Cmd::Leptos => mimalloc_harness::leptos::run(),
-        Cmd::Vma => mimalloc_harness::vma::run(),
+        Cmd::Vma => {
+            #[cfg(unix)]
+            {
+                mimalloc_harness::vma::run()
+            }
+            #[cfg(not(unix))]
+            {
+                Err(anyhow::anyhow!("vma suite is unix-only"))
+            }
+        }
         Cmd::Browsers => mimalloc_harness::browsers::run(),
     };
     if let Err(e) = r {

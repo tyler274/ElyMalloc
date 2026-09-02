@@ -106,16 +106,41 @@ fn compile(cc: &Path, args: &[&str], srcs: &[&Path], out: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(unix, not(target_os = "linux")))]
+fn versioned_lib_name(so: &Path) -> String {
+    let secure = crate::process::expected_soname(so) == crate::process::SECURE_SONAME;
+    if cfg!(target_os = "macos") {
+        if secure {
+            "libmimalloc-secure.3.dylib".into()
+        } else {
+            "libmimalloc.3.dylib".into()
+        }
+    } else {
+        crate::process::expected_soname(so).to_string()
+    }
+}
+
 fn soname_link(so: &Path) -> Result<PathBuf> {
     let dir = so.parent().context("so parent")?;
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
-        let versioned = crate::process::readelf_soname(so)
-            .unwrap_or_else(|_| crate::process::expected_soname(so).to_string());
+        let versioned = {
+            #[cfg(target_os = "linux")]
+            {
+                crate::process::readelf_soname(so)
+                    .unwrap_or_else(|_| crate::process::expected_soname(so).to_string())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                versioned_lib_name(so)
+            }
+        };
         let link = dir.join(&versioned);
-        let _ = std::fs::remove_file(&link);
-        symlink(so.file_name().context("so name")?, &link).ok();
+        if link != so {
+            let _ = std::fs::remove_file(&link);
+            symlink(so.file_name().context("so name")?, &link).ok();
+        }
     }
     Ok(dir.to_path_buf())
 }
@@ -146,11 +171,14 @@ pub fn run() -> Result<()> {
 
     #[cfg(windows)]
     {
+        windows_dll_smoke(&so)?;
         let cc = cc();
-        let smoke = out.join("mi-smoke-win");
-        compile(&cc, &["-O2"], &[&c_tests.join("smoke-win.c"), &so], &smoke)?;
-        let libpath = [lib_path_env(so.parent().unwrap_or(&so))];
-        run_ok(&smoke, &[] as &[&str], &libpath)?;
+        if which::which(&cc).is_ok() || cc.exists() {
+            let smoke = out.join("mi-smoke-win.exe");
+            compile(&cc, &["-O2"], &[&c_tests.join("smoke-win.c"), &so], &smoke)?;
+            let libpath = [lib_path_env(so.parent().unwrap_or(&so))];
+            run_ok(&smoke, &[] as &[&str], &libpath)?;
+        }
         println!("c-abi windows smoke passed");
         return Ok(());
     }
@@ -308,4 +336,79 @@ pub fn run() -> Result<()> {
 
     println!("c-abi checks passed");
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_dll_smoke(dll: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    type Malloc = unsafe extern "C" fn(usize) -> *mut u8;
+    type Free = unsafe extern "C" fn(*mut u8);
+    type Realloc = unsafe extern "C" fn(*mut u8, usize) -> *mut u8;
+    type Calloc = unsafe extern "C" fn(usize, usize) -> *mut u8;
+
+    unsafe extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut core::ffi::c_void;
+        fn GetProcAddress(h: *mut core::ffi::c_void, name: *const u8) -> *mut core::ffi::c_void;
+        fn FreeLibrary(h: *mut core::ffi::c_void) -> i32;
+    }
+
+    unsafe fn proc<T>(h: *mut core::ffi::c_void, name: &[u8]) -> Result<T> {
+        let p = GetProcAddress(h, name.as_ptr());
+        if p.is_null() {
+            bail!("missing export {}", String::from_utf8_lossy(name));
+        }
+        Ok(std::mem::transmute_copy(&p))
+    }
+
+    let mut w: Vec<u16> = dll.as_os_str().encode_wide().collect();
+    w.push(0);
+    let h = unsafe { LoadLibraryW(w.as_ptr()) };
+    if h.is_null() {
+        bail!("LoadLibrary {}", dll.display());
+    }
+
+    let result = (|| unsafe {
+        let malloc: Malloc = proc(h, b"malloc\0")?;
+        let free: Free = proc(h, b"free\0")?;
+        let realloc: Realloc = proc(h, b"realloc\0")?;
+        let calloc: Calloc = proc(h, b"calloc\0")?;
+        let _mi: Malloc = proc(h, b"mi_malloc\0")?;
+
+        let z = malloc(0);
+        if z.is_null() {
+            bail!("malloc(0)");
+        }
+        free(z);
+        free(core::ptr::null_mut());
+
+        let mut p = malloc(32);
+        if p.is_null() {
+            bail!("malloc");
+        }
+        core::ptr::write_bytes(p, 0xAB, 32);
+        p = realloc(p, 4096);
+        if p.is_null() {
+            bail!("realloc grow");
+        }
+        if *p != 0xAB {
+            bail!("realloc preserve");
+        }
+        let c = calloc(16, 4);
+        if c.is_null() {
+            bail!("calloc");
+        }
+        for i in 0..16 {
+            if *c.add(i * 4) != 0 {
+                bail!("calloc zero");
+            }
+        }
+        free(p);
+        free(c);
+        Ok(())
+    })();
+    unsafe {
+        FreeLibrary(h);
+    }
+    result
 }

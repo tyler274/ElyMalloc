@@ -122,6 +122,7 @@ unsafe extern "C" {
 static ZONE_INIT: extern "C" fn() = register_zone;
 
 extern "C" fn register_zone() {
+    mimalloc_core::init();
     unsafe {
         malloc_zone_register(core::ptr::addr_of_mut!(ZONE));
     }

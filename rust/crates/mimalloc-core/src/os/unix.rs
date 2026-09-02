@@ -39,20 +39,26 @@ pub const MAP_NORESERVE: i32 = libc::MAP_NORESERVE;
 #[cfg(not(target_os = "linux"))]
 pub const MAP_NORESERVE: i32 = 0;
 
-static mut OS_PAGE_SIZE: usize = 4096;
+static OS_PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init_page_size() {
-    unsafe {
-        let n = libc::sysconf(libc::_SC_PAGESIZE);
-        if n > 0 {
-            OS_PAGE_SIZE = n as usize;
-        }
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if n > 0 {
+        OS_PAGE_SIZE.store(n as usize, Ordering::Release);
+    } else {
+        OS_PAGE_SIZE.store(4096, Ordering::Release);
     }
 }
 
 #[inline]
 pub fn page_size() -> usize {
-    unsafe { OS_PAGE_SIZE }
+    let n = OS_PAGE_SIZE.load(Ordering::Acquire);
+    if n == 0 {
+        init_page_size();
+        OS_PAGE_SIZE.load(Ordering::Acquire).max(4096)
+    } else {
+        n
+    }
 }
 
 #[inline]
