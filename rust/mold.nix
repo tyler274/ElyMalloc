@@ -46,7 +46,7 @@ CMAKE
         exit 1
       fi
       # Don't pipe `readelf` into `grep -q`: grep exits on the first match,
-      # readelf gets SIGPIPE, and with `pipefail` the pipeline is 141 — which
+      # readelf gets SIGPIPE, and with `pipefail` the pipeline is 141 - which
       # `if !` treats as failure even when `mi_malloc` is present.
       readelf -s --wide "$out/bin/mold" > "$TMPDIR/mold.syms"
       if ! grep -F -w -- mi_malloc "$TMPDIR/mold.syms" >/dev/null; then
