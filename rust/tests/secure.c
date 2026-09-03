@@ -48,6 +48,16 @@ static int child_aborted(int st) {
   return 0;
 }
 
+/* Linux PROT_NONE is SIGSEGV. Darwin maps KERN_PROTECTION_FAILURE to SIGBUS. */
+static int child_mem_fault(int st) {
+  int sig;
+  if (!WIFSIGNALED(st)) {
+    return 0;
+  }
+  sig = WTERMSIG(st);
+  return sig == SIGSEGV || sig == SIGBUS;
+}
+
 int main(void) {
   mi_option_disable(mi_option_verbose);
 
@@ -135,7 +145,14 @@ int main(void) {
       _exit(2);
     }
     int st = wait_child(pid);
-    if (!(WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV)) {
+    if (!child_mem_fault(st)) {
+      if (WIFSIGNALED(st)) {
+        fprintf(stderr, "secure test failed: metadata guard page (signal %d)\n",
+                WTERMSIG(st));
+      } else if (WIFEXITED(st)) {
+        fprintf(stderr, "secure test failed: metadata guard page (exit %d)\n",
+                WEXITSTATUS(st));
+      }
       die("metadata guard page");
     }
     mi_free(p);
@@ -157,7 +174,7 @@ int main(void) {
       _exit(2);
     }
     int st = wait_child(pid);
-    if (!(WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV)) {
+    if (!child_mem_fault(st)) {
       die("end-of-page guard");
     }
     mi_free(p);
@@ -184,7 +201,7 @@ int main(void) {
       _exit(2);
     }
     int st = wait_child(pid);
-    if (!(WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV)) {
+    if (!child_mem_fault(st)) {
       die("object overflow guard page");
     }
     mi_free(g);

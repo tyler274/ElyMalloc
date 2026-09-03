@@ -33,6 +33,16 @@ cd rust
 # or: cargo test -p mimalloc-harness && cargo run -p mimalloc-harness -- run
 ```
 
+Replay GitHub Rewrite jobs in Docker before push:
+
+```
+./tests/ci-docker.sh              # linux-x64 core + c-abi (rust:bookworm)
+CROSS=1 ./tests/ci-docker.sh      # plus aarch64/riscv64 qemu smokes
+./tests/ci-docker-osx.sh          # Darwin via sickcodes/Docker-OSX (needs /dev/kvm)
+```
+
+`ci-docker-osx.sh` boots [Docker-OSX](https://github.com/sickcodes/Docker-OSX) headless (SSH `user`/`alpine` on `127.0.0.1:50922`) and runs the same `cargo test` / `mimalloc-c` / `c-abi` steps as the macOS Actions job. That VM is **Intel macOS**, not `macos-14` arm64: it still hits Darwin malloc-zone `fork`, host `EAGAIN` (35), and `PROT_NONE` → `SIGBUS`. It does **not** emulate 16 KiB pages or 128 KiB slices. Hub no longer carries `sickcodes/docker-osx:auto`; the script defaults to `dickhub/docker-osx:auto`. First boot copies the disk between layers and can take 15+ minutes to SSH. `PULL=1` forces a pull; `STOP=1` stops the VM afterwards; `FORCE=1` recreates a stale container.
+
 Nix orchestrates the same suite (glibc and musl) as flake checks. Musl uses `rust-overlay` for `rust-std` so we do not rebuild rustc against musl:
 
 ```
