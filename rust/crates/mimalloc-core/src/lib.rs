@@ -67,6 +67,14 @@
 //! - `malloc(n)` returns at least [`MAX_ALIGN_SIZE`] (16) aligned. Requests
 //!   larger than [`MAX_ALLOC`] (`PTRDIFF_MAX`) fail with `ENOMEM`.
 //!
+//! # Testing
+//!
+//! `cargo test` runs seeded property tests (alignment, size classes, encoded
+//! free-list round-trips, canaries, quarantine ring), a sequential heap
+//! fuzzer, and a threaded / fork chaos monkey (`MIMALLOC_CHAOS_STEPS` /
+//! `MIMALLOC_CHAOS_SEED`; `MIMALLOC_QEMU=1` skips threads and fork). The C
+//! ABI probe `tests/chaos.c` is part of `mimalloc-harness c-abi`.
+//!
 //! # Safety
 //!
 //! Allocation functions return uninitialized memory (except `calloc` /
@@ -79,6 +87,8 @@
 pub mod alloc;
 pub mod arena;
 mod bin;
+#[cfg(test)]
+mod chaos;
 pub mod global;
 mod heap;
 pub mod hooks;

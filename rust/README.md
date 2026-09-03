@@ -31,7 +31,11 @@ This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `c
 cd rust
 ./tests/run.sh
 # or: cargo test -p mimalloc-harness && cargo run -p mimalloc-harness -- run
+./tests/fuzz.sh                   # longer property + heap fuzzer + chaos
+# or: cargo run -p mimalloc-harness -- fuzz --steps 65536 --seed 1
 ```
+
+`cargo test -p mimalloc-core` already runs seeded property tests (alignment, size-class bins, encoded free-list round-trips, padding canaries, quarantine ring), a sequential heap fuzzer (live-set overlap, `usable_size`, realloc prefix, calloc zeros), and a chaos monkey (threads, cross-thread `free`, `fork`). Default step counts fit CI and qemu; `MIMALLOC_CHAOS_STEPS` / `MIMALLOC_CHAOS_SEED` raise the budget. `MIMALLOC_QEMU=1` skips threads and fork. `c-abi` also compiles `tests/chaos.c` under preload.
 
 Replay GitHub Rewrite jobs in Docker before push:
 
@@ -214,7 +218,7 @@ Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features 
 
 ## Formal verification (Kani)
 
-`mimalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, free-list `encode_addr`/`decode_addr`, canary low-byte-zero vs the freed marker, a synthetic page `used + local_len` ghost, and the delayed-free quarantine ring. `vma-core` proves first-fit / coalesce on a fixed-size array twin of the free list (Kani + `BTreeMap` / `Vec` unwind is too heavy). Host `cargo test` covers the same properties with fixed inputs. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
+`mimalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, free-list `encode_addr`/`decode_addr`, canary low-byte-zero vs the freed marker, a synthetic page `used + local_len` ghost, and the delayed-free quarantine ring. `vma-core` proves first-fit / coalesce on a fixed-size array twin of the free list (Kani + `BTreeMap` / `Vec` unwind is too heavy). Host `cargo test` covers the same properties with fixed inputs plus the seeded random suite in `chaos.rs`. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
 
 ```
 nix develop          # cargo-kani on PATH (no cargo install)

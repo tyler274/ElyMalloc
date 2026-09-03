@@ -17,6 +17,7 @@
 //! | [`projects`] | `projects` (Bun, Serde) |
 //! | [`python`] | `python` (CPython regrtest) |
 //! | [`leptos`] | `leptos` (Leptos WASM suites) |
+//! | [`fuzz`] | `fuzz` (property + chaos; longer than `cargo test`) |
 //! | [`vma`] | `vma` (AMD VMA 3.4) |
 //! | [`browsers`] | `browsers` |
 
@@ -27,6 +28,7 @@ pub mod compare;
 pub mod crash;
 pub mod failset;
 pub mod filter;
+pub mod fuzz;
 pub mod ids;
 pub mod leptos;
 pub mod linkers;

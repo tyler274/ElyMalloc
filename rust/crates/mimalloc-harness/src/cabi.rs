@@ -329,6 +329,14 @@ pub fn run() -> Result<()> {
             &sec,
         )?;
         run_ok(&sec, &[] as &[&str], &libpath)?;
+        let chaos = out.join("mi-chaos");
+        compile(
+            &cc,
+            &["-O2", "-pthread", "-DNDEBUG", &inc_arg],
+            &[&c_tests.join("chaos.c"), Path::new(&so_s)],
+            &chaos,
+        )?;
+        run_ok(&chaos, &[] as &[&str], &libpath)?;
     }
 
     println!("c-abi checks passed");

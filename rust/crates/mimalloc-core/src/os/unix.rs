@@ -61,8 +61,13 @@ pub fn page_size() -> usize {
     }
 }
 
-#[inline]
 pub fn abort() -> ! {
+    #[cfg(test)]
+    {
+        extern crate std;
+        let bt = std::backtrace::Backtrace::force_capture();
+        let _ = std::eprintln!("mimalloc abort:\n{bt}");
+    }
     unsafe {
         libc::_exit(1);
     }

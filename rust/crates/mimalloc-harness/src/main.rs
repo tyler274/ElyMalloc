@@ -37,6 +37,15 @@ enum Cmd {
     Python,
     /// Leptos (leptos-rs/leptos) WASM test suites + reactive_graph smoke
     Leptos,
+    /// Property tests, heap fuzzer, and threaded chaos monkey (longer than cargo test)
+    Fuzz {
+        /// Heap-fuzzer / chaos step budget (`MIMALLOC_CHAOS_STEPS`)
+        #[arg(long, default_value_t = mimalloc_harness::fuzz::DEFAULT_STEPS)]
+        steps: u32,
+        /// RNG seed (`MIMALLOC_CHAOS_SEED`)
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
     /// Vulkan Memory Allocator C ABI (virtual allocator, 3.4 symbols, Blender-style smoke)
     Vma,
     /// Firefox / Chromium / Electron vs C mimalloc (startup, child maps, page smoke)
@@ -57,6 +66,7 @@ fn main() {
         Cmd::Projects => mimalloc_harness::projects::run(),
         Cmd::Python => mimalloc_harness::python::run(),
         Cmd::Leptos => mimalloc_harness::leptos::run(),
+        Cmd::Fuzz { steps, seed } => mimalloc_harness::fuzz::run(steps, seed),
         Cmd::Vma => {
             #[cfg(unix)]
             {
