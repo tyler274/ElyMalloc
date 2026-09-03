@@ -10,9 +10,14 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// POSIX `ENOMEM` (same number on Linux and in our wasm errno cell).
+/// POSIX `ENOMEM` (same number on Linux, Darwin, and in our wasm errno cell).
 pub const ENOMEM: i32 = 12;
 pub const EINVAL: i32 = 22;
+/// Linux `EAGAIN` is 11; Darwin/BSD use 35. Match `<errno.h>` so C tests and
+/// `mi_register_error` see the host value (C mimalloc passes `EAGAIN` from libc).
+#[cfg(unix)]
+pub const EAGAIN: i32 = libc::EAGAIN;
+#[cfg(not(unix))]
 pub const EAGAIN: i32 = 11;
 pub const EFAULT: i32 = 14;
 
