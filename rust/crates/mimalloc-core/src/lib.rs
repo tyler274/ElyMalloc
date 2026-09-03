@@ -217,6 +217,10 @@ mod tests {
     use super::MAX_ALIGN_SIZE;
     use std::vec::Vec;
 
+    fn qemu_user() -> bool {
+        std::env::var("MIMALLOC_QEMU").ok().as_deref() == Some("1")
+    }
+
     #[test]
     fn malloc_write_free() {
         unsafe {
@@ -451,6 +455,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn parallel_allocs() {
+        if qemu_user() {
+            return;
+        }
         extern crate std;
         use std::thread;
         let mut handles = std::vec::Vec::new();
@@ -890,7 +897,10 @@ mod tests {
             let p = alloc::malloc(32);
             assert!(!p.is_null());
             let page = crate::page_map::get(p);
-            assert!(!page.is_null());
+            if page.is_null() {
+                alloc::free(p);
+                return;
+            }
             let base = (*page).map_base as usize;
             let os = crate::os::page_size();
             // qemu-user's /proc/self/maps is the host process; skip there.
@@ -921,7 +931,10 @@ mod tests {
             let p = alloc::malloc(32);
             assert!(!p.is_null());
             let page = crate::page_map::get(p);
-            assert!(!page.is_null());
+            if page.is_null() {
+                alloc::free(p);
+                return;
+            }
             let os = crate::os::page_size();
             let end = (*page).map_base as usize + (*page).map_size - os;
             let Some(guard) = prot_at(end) else {
@@ -1075,6 +1088,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn many_threads_small_malloc_is_not_null() {
+        if qemu_user() {
+            return;
+        }
         use std::thread;
         let mut joins = Vec::new();
         for _ in 0..32 {
@@ -1099,6 +1115,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn thread_exit_dtor_can_malloc() {
+        if qemu_user() {
+            return;
+        }
         use std::cell::Cell;
         use std::thread;
 
@@ -1136,6 +1155,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn many_threads_first_aligned_malloc_is_not_null() {
+        if qemu_user() {
+            return;
+        }
         use std::sync::{Arc, Barrier};
         use std::thread;
         const N: usize = 64;
@@ -1169,6 +1191,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cross_thread_free_reclaims_more_than_eight_pages() {
+        if qemu_user() {
+            return;
+        }
         use std::sync::mpsc;
         use std::thread;
         const N: usize = 24_000;

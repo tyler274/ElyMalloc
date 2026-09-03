@@ -50,8 +50,11 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          QEMU_LD_PREFIX: /usr/aarch64-linux-gnu
+          MIMALLOC_QEMU: "1"
+          RUST_TEST_THREADS: "1"
         run: |
-          cargo test -p mimalloc-core --release --target aarch64-unknown-linux-gnu
+          cargo test -p mimalloc-core --release --target aarch64-unknown-linux-gnu -- --test-threads=1
           cargo build --release -p mimalloc-c --target aarch64-unknown-linux-gnu
           cargo check -p mimalloc-core --target aarch64-unknown-linux-musl
           cargo build --release -p mimalloc-c --target aarch64-unknown-linux-musl || \
@@ -76,8 +79,11 @@ jobs:
         env:
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUNNER: qemu-riscv64 -L /usr/riscv64-linux-gnu
+          QEMU_LD_PREFIX: /usr/riscv64-linux-gnu
+          MIMALLOC_QEMU: "1"
+          RUST_TEST_THREADS: "1"
         run: |
-          cargo test -p mimalloc-core --release --target riscv64gc-unknown-linux-gnu
+          cargo test -p mimalloc-core --release --target riscv64gc-unknown-linux-gnu -- --test-threads=1
           cargo build --release -p mimalloc-c --target riscv64gc-unknown-linux-gnu
           riscv64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-riscv
           qemu-riscv64 -L /usr/riscv64-linux-gnu \
