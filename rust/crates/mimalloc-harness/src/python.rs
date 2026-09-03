@@ -152,7 +152,10 @@ fn summaries_match(a: &Captured, b: &Captured) -> bool {
     if crashed(a) != crashed(b) {
         return false;
     }
-    match (parse_py_summary(&suite_text(a)), parse_py_summary(&suite_text(b))) {
+    match (
+        parse_py_summary(&suite_text(a)),
+        parse_py_summary(&suite_text(b)),
+    ) {
         (Some(x), Some(y)) => {
             x.result == y.result
                 && x.tests_run == y.tests_run
@@ -293,8 +296,7 @@ fn store_python3() -> Option<PathBuf> {
 fn ensure_cpython_src(py: &Path) -> Result<PathBuf> {
     if let Ok(p) = std::env::var("CPYTHON_SRC").or_else(|_| std::env::var("PYTHON_SRC")) {
         let pb = PathBuf::from(p);
-        if pb.join("Lib/test/regrtest.py").is_file() && pb.join("Lib/test/test_list.py").is_file()
-        {
+        if pb.join("Lib/test/regrtest.py").is_file() && pb.join("Lib/test/test_list.py").is_file() {
             return Ok(pb);
         }
         bail!("CPYTHON_SRC missing Lib/test/regrtest.py or test_list.py");
@@ -327,7 +329,12 @@ fn ensure_cpython_src(py: &Path) -> Result<PathBuf> {
 fn probes() -> Vec<(String, Vec<String>)> {
     let mut out: Vec<(String, Vec<String>)> = DEFAULT
         .iter()
-        .map(|(n, t)| ((*n).to_string(), t.iter().map(|s| (*s).to_string()).collect()))
+        .map(|(n, t)| {
+            (
+                (*n).to_string(),
+                t.iter().map(|s| (*s).to_string()).collect(),
+            )
+        })
         .collect();
     if env_is_one("CPYTHON_FULL") {
         for (n, t) in FULL {

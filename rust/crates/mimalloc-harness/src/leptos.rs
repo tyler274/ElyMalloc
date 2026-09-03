@@ -112,7 +112,8 @@ pub fn inject_mimalloc(crate_dir: &Path, mimalloc_core: &Path) -> Result<bool> {
         return Ok(false);
     }
     let cargo = crate_dir.join("Cargo.toml");
-    let mut toml = fs::read_to_string(&cargo).with_context(|| format!("read {}", cargo.display()))?;
+    let mut toml =
+        fs::read_to_string(&cargo).with_context(|| format!("read {}", cargo.display()))?;
     let mut rs = fs::read_to_string(&lib).with_context(|| format!("read {}", lib.display()))?;
     if let Some(i) = rs.find(INJECT_MARK) {
         rs.truncate(i);
@@ -202,14 +203,7 @@ fn run_cargo_test(
         }
         extra.push((std::ffi::OsString::from("PATH"), path));
     }
-    run_captured_os(
-        &cargo,
-        &args,
-        &extra,
-        timeout,
-        Some(src),
-        &["LD_PRELOAD"],
-    )
+    run_captured_os(&cargo, &args, &extra, timeout, Some(src), &["LD_PRELOAD"])
 }
 
 fn print_cap(name: &str, cap: &Captured) {
@@ -263,7 +257,8 @@ fn run_in_tree_smoke(wasmtime: &Path) -> Result<()> {
     if !st.success() {
         bail!("mimalloc-leptos-smoke unknown-unknown build failed");
     }
-    let unknown = rust_root().join("target/wasm32-unknown-unknown/release/mimalloc-leptos-smoke.wasm");
+    let unknown =
+        rust_root().join("target/wasm32-unknown-unknown/release/mimalloc-leptos-smoke.wasm");
     if !unknown.is_file() {
         bail!("missing {}", unknown.display());
     }
@@ -427,17 +422,17 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
-        write_all(&dir.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.1.0\"\nedition=\"2021\"\n").unwrap();
+        write_all(
+            &dir.join("Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+        )
+        .unwrap();
         write_all(&dir.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
         let core = rust_root().join("crates/mimalloc-core");
         assert!(inject_mimalloc(&dir, &core).unwrap());
         assert!(inject_mimalloc(&dir, &core).unwrap());
         let rs = fs::read_to_string(dir.join("src/lib.rs")).unwrap();
-        assert_eq!(
-            rs.matches("static __MIMALLOC_REWRITE").count(),
-            1,
-            "{rs}"
-        );
+        assert_eq!(rs.matches("static __MIMALLOC_REWRITE").count(), 1, "{rs}");
         assert!(rs.contains(INJECT_MARK));
         assert!(rs.contains("global_allocator"));
         let toml = fs::read_to_string(dir.join("Cargo.toml")).unwrap();

@@ -117,10 +117,7 @@ pub fn find_wasmtime() -> Option<std::path::PathBuf> {
     if let Ok(p) = which::which("wasmtime") {
         return Some(p);
     }
-    for cand in [
-        "/run/current-system/sw/bin/wasmtime",
-        "/usr/bin/wasmtime",
-    ] {
+    for cand in ["/run/current-system/sw/bin/wasmtime", "/usr/bin/wasmtime"] {
         let p = std::path::PathBuf::from(cand);
         if p.is_file() {
             return Some(p);
