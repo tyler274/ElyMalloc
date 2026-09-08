@@ -23,6 +23,7 @@ pub fn run(steps: u32, seed: u64) -> Result<()> {
         "--release",
         "chaos::",
         "--",
+        "--test-threads=1",
         "--nocapture",
     ])?;
     crate::process::build_mimalloc_cdylibs()?;
