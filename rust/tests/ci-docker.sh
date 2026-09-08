@@ -32,7 +32,7 @@ linux_x64() {
     -e CARGO_TARGET_DIR=/tmp/target \
     "${vols[@]}" \
     "$IMAGE" \
-    bash -c 'cargo test -p mimalloc-core --release --offline && cargo build --release --offline -p mimalloc-c && cargo run --offline -p mimalloc-harness -- c-abi'
+    bash -c 'cargo test -p mimalloc-core --release --offline -- --test-threads=1 && cargo build --release --offline -p mimalloc-c && cargo run --offline -p mimalloc-harness -- c-abi'
 }
 
 cross_qemu() {

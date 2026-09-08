@@ -73,7 +73,9 @@ rustPlatform.buildRustPackage {
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    cargo test --offline -p mimalloc-core --release ${targetFlag}
+    # Core tests share the process heap; parallel rustc threads flake
+    # (chaos_cross_thread_free cookies, heap_visit live counts).
+    cargo test --offline -p mimalloc-core --release ${targetFlag} -- --test-threads=1
     cargo test --offline -p mimalloc-wasm-smoke --release ${targetFlag}
     cargo test --offline -p mimalloc-leptos-smoke --release ${targetFlag}
     cargo test --offline -p mimalloc-harness --release ${targetFlag}

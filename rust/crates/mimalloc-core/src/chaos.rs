@@ -608,18 +608,22 @@ fn chaos_cross_thread_free() {
     }
     use std::sync::{Arc, Mutex};
     use std::thread;
+    crate::init();
+    let heap = unsafe { crate::heap_new() };
+    assert!(!heap.is_null());
     let bag: Arc<Mutex<Vec<(usize, usize, u64)>>> = Arc::new(Mutex::new(Vec::new()));
     let seed = chaos_seed() ^ 0xC0FFEE;
     {
         let bag = Arc::clone(&bag);
+        let heap = heap as usize;
         thread::spawn(move || unsafe {
+            let heap = heap as *mut crate::Heap;
             let mut rng = Rng(seed);
-            crate::init();
             let mut local = Vec::new();
             for _ in 0..256 {
                 let n = rng.usize(8, 128);
                 let tag = rng.next_u64();
-                let p = alloc::malloc(n);
+                let p = crate::heap_malloc(heap, n);
                 assert!(!p.is_null());
                 paint(p, n, tag);
                 local.push((p as usize, n, tag));
@@ -638,6 +642,9 @@ fn chaos_cross_thread_free() {
         }
     });
     consumer.join().expect("consumer");
+    unsafe {
+        crate::heap_destroy(heap);
+    }
 }
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]

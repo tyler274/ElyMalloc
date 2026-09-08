@@ -30,7 +30,7 @@ jobs:
       - name: Tests
         working-directory: rust
         run: |
-          cargo test -p mimalloc-core --release
+          cargo test -p mimalloc-core --release -- --test-threads=1
           cargo build --release -p mimalloc-c
           cargo run -p mimalloc-harness -- c-abi
 
@@ -99,7 +99,7 @@ jobs:
       - name: Tests
         working-directory: rust
         run: |
-          cargo test -p mimalloc-core --release
+          cargo test -p mimalloc-core --release -- --test-threads=1
           cargo build --release -p mimalloc-c
           cargo run -p mimalloc-harness -- c-abi
 
@@ -113,7 +113,7 @@ jobs:
         working-directory: rust
         shell: bash
         run: |
-          cargo test -p mimalloc-core --release
+          cargo test -p mimalloc-core --release -- --test-threads=1
           cargo build --release -p mimalloc-c
           cargo run -p mimalloc-harness -- c-abi
 
