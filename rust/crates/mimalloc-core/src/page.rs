@@ -522,6 +522,8 @@ pub unsafe fn create_huge(
     (*page).flags = AtomicU32::new(0);
     if from_arena {
         (*page).set_arena();
+    } else {
+        crate::stats::pages_os_allocated_add();
     }
     init_keys(page);
     install_meta_guards(base, lead, meta);
@@ -681,6 +683,30 @@ pub unsafe fn contains(page: *mut Page, ptr: *const u8) -> bool {
     addr >= start && addr < end
 }
 
+/// Block start containing `p` (C `_mi_page_ptr_unalign`).
+#[inline]
+pub unsafe fn block_start_of(page: *mut Page, ptr: *const u8) -> *mut u8 {
+    if page.is_null() || ptr.is_null() || !contains(page, ptr) {
+        return ptr::null_mut();
+    }
+    let bs = (*page).block_size;
+    if bs == 0 {
+        return ptr::null_mut();
+    }
+    let start = ptrx::addr((*page).area);
+    let addr = ptrx::addr(ptr);
+    if addr < start {
+        return ptr::null_mut();
+    }
+    let diff = addr - start;
+    let adjust = if bs.is_power_of_two() {
+        diff & (bs - 1)
+    } else {
+        diff % bs
+    };
+    (addr - adjust) as *mut u8
+}
+
 /// True if `ptr` is the start of a block (offset from `area` is a multiple of `block_size`).
 #[inline]
 pub unsafe fn is_block_start(page: *mut Page, ptr: *const u8) -> bool {
@@ -801,7 +827,7 @@ unsafe fn decode_padding(page: *mut Page, block: *mut u8) -> Option<(usize, usiz
     }
 }
 
-/// Byte-precise usable size (user request), or 0 if `p` is not a live block.
+/// Byte-precise usable size from `p` (remaining if `p` is an interior).
 pub unsafe fn usable_size(page: *mut Page, p: *const u8) -> usize {
     if page.is_null() || p.is_null() || !contains(page, p) {
         return 0;
@@ -819,12 +845,19 @@ pub unsafe fn usable_size(page: *mut Page, p: *const u8) -> usize {
         }
         return guard - addr;
     }
-    if !is_block_start(page, p) {
+    let block = block_start_of(page, p);
+    if block.is_null() {
         return 0;
     }
-    match decode_padding(page, p as *mut u8) {
+    let full = match decode_padding(page, block) {
         Some((delta, bsize)) => bsize - delta,
-        None => 0,
+        None => return 0,
+    };
+    let adjust = ptrx::addr(p) - ptrx::addr(block);
+    if adjust > full {
+        0
+    } else {
+        full - adjust
     }
 }
 

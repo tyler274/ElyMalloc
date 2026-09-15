@@ -105,6 +105,21 @@ pub unsafe fn malloc(size: usize) -> *mut u8 {
     heap::theap_malloc(h, size)
 }
 
+/// Word-size small alloc (`mi_wmalloc_small`): `wsize * size_of::<usize>()`.
+pub unsafe fn wmalloc_small(wsize: usize) -> *mut u8 {
+    malloc(wsize.saturating_mul(PTR_SIZE))
+}
+
+/// Zeroed word-size small alloc (`mi_wzalloc_small`).
+pub unsafe fn wzalloc_small(wsize: usize) -> *mut u8 {
+    let n = wsize.saturating_mul(PTR_SIZE);
+    let p = malloc(n);
+    if !p.is_null() {
+        mem::zero_user(p, n);
+    }
+    p
+}
+
 /// `calloc`: overflow of `count * size` is `ENOMEM`.
 #[inline]
 pub unsafe fn calloc(count: usize, size: usize) -> *mut u8 {
@@ -188,6 +203,7 @@ pub unsafe fn free(p: *mut u8) {
     if !(*page).is_guarded() && !page::is_block_start(page, p) {
         return;
     }
+    crate::profile::on_free(p);
     let user = page::usable_size(page, p);
     if !page::check_free(page, p) {
         return;
@@ -419,7 +435,7 @@ pub const SMALL_SIZE_MAX: usize = 128 * PTR_SIZE;
 
 /// Size-hinted free. Reports `EINVAL` if `size` is larger than the usable
 /// size (C debug `mi_free_size`), then still frees. Guarded blocks skip the
-/// size checks (C v3.5.1: a sampled guard may over-size a small request).
+/// size checks (C: a sampled guard may over-size a small request).
 pub unsafe fn free_size(p: *mut u8, size: usize) {
     if p.is_null() {
         return;

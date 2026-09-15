@@ -47,6 +47,9 @@ pub struct ThreadHeap {
     pub guarded_size_min: usize,
     pub guarded_size_max: usize,
     pub in_threadpool: bool,
+    pub profile_sample_rate: usize,
+    pub profile_countdown: usize,
+    pub sample_requested: u64,
 }
 
 /// Alias matching C `mi_theap_t`.
@@ -64,8 +67,10 @@ pub struct Heap {
     lock: SpinLock,
     next_free: *mut Heap,
     next_all: *mut Heap,
-    subproc: *mut crate::subproc::Subproc,
+    pub(crate) subproc: *mut crate::subproc::Subproc,
     numa_node: i32,
+    pub(crate) stats: AllocStats,
+    pub(crate) profiler: AtomicPtr<crate::profile::Profiler>,
 }
 
 static mut HEAP_BUMP: *mut u8 = ptr::null_mut();
@@ -526,6 +531,7 @@ unsafe fn malloc_guarded(h: *mut ThreadHeap, size: usize, align: usize) -> *mut 
     crate::stats::malloc_add((*page).block_size);
     (*h).stats.add_malloc((*page).block_size);
     crate::stats::malloc_guarded_add();
+    crate::profile::on_malloc(h, p, size);
     p
 }
 
@@ -562,6 +568,9 @@ pub unsafe fn create() -> *mut ThreadHeap {
     (*h).tid = os::gettid();
     (*h).subproc = crate::subproc::current_ptr();
     (*h).guarded_size_max = 1 << 30; // 1 GiB, matching C `mi_option_guarded_max`
+    if (*h).owner.is_null() {
+        (*h).owner = heap_main();
+    }
     h
 }
 
@@ -585,6 +594,7 @@ pub unsafe fn heap_new() -> *mut Heap {
     (*h).numa_node = -1;
     (*inner).owner = h;
     (*inner).subproc = (*h).subproc;
+    crate::profile::inherit_from_subproc(h);
     crate::stats::heap_add();
     register_heap(h);
     h
@@ -790,6 +800,12 @@ pub unsafe fn heap_destroy(h: *mut Heap) {
     free_heap_obj(h);
 }
 
+unsafe fn finish_user(th: *mut ThreadHeap, p: *mut u8, size: usize) -> *mut u8 {
+    let p = page::finish_alloc(p, page::request_size(size));
+    crate::profile::on_malloc(th, p, size);
+    p
+}
+
 /// Allocate `size` bytes from `th` (C `_mi_theap_malloc`).
 pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
     if th.is_null() {
@@ -813,7 +829,7 @@ pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
     } else {
         malloc_bin(th, bin)
     };
-    page::finish_alloc(p, page::request_size(size))
+    finish_user(th, p, size)
 }
 
 /// Aligned allocate. Size classes whose `block_size` is a multiple of `align`
@@ -839,9 +855,10 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
         }
     }
     if align >= SLICE_SIZE {
-        return page::finish_alloc(
+        return finish_user(
+            th,
             malloc_huge(th, page::padded_need(size).max(1), align),
-            page::request_size(size),
+            size,
         );
     }
     // Do not use `malloc(size)` for align<=16: 8- and 24-byte classes are not
@@ -850,31 +867,30 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
     loop {
         let bin = bin::bin_for_size(need);
         if bin >= crate::BIN_HUGE {
-            return page::finish_alloc(
-                malloc_huge(th, need.max(1), align),
-                page::request_size(size),
-            );
+            return finish_user(th, malloc_huge(th, need.max(1), align), size);
         }
         let bs = bin::bin_size(bin);
         if bs % align == 0 {
             let p = malloc_bin(th, bin);
             if p.is_null() || (p as usize) % align == 0 {
-                return page::finish_alloc(p, page::request_size(size));
+                return finish_user(th, p, size);
             }
             let pg = crate::page_map::get(p);
             crate::stats::malloc_sub((*pg).block_size);
             (*th).stats.sub_malloc((*pg).block_size);
             page::push_local(pg, p);
-            return page::finish_alloc(
+            return finish_user(
+                th,
                 malloc_huge(th, page::padded_need(size).max(1), align),
-                page::request_size(size),
+                size,
             );
         }
         need = bs.saturating_add(1);
         if need > LARGE_MAX_OBJ_SIZE {
-            return page::finish_alloc(
+            return finish_user(
+                th,
                 malloc_huge(th, page::padded_need(size).max(align).max(1), align),
-                page::request_size(size),
+                size,
             );
         }
     }
@@ -923,10 +939,26 @@ pub unsafe fn theap_malloc_aligned_at(
     if offset % align == 0 {
         return theap_malloc_aligned(th, size, align);
     }
-    page::finish_alloc(
+    finish_user(
+        th,
         malloc_huge_at(th, page::padded_need(size).max(1), align, offset),
-        page::request_size(size),
+        size,
     )
+}
+
+/// Word-size small alloc (`mi_theap_wmalloc_small`).
+pub unsafe fn theap_wmalloc_small(th: *mut ThreadHeap, wsize: usize) -> *mut u8 {
+    theap_malloc(th, wsize.saturating_mul(crate::PTR_SIZE))
+}
+
+/// Zeroed word-size small alloc (`mi_theap_wzalloc_small`).
+pub unsafe fn theap_wzalloc_small(th: *mut ThreadHeap, wsize: usize) -> *mut u8 {
+    let n = wsize.saturating_mul(crate::PTR_SIZE);
+    let p = theap_malloc(th, n);
+    if !p.is_null() {
+        crate::mem::zero_user(p, n);
+    }
+    p
 }
 
 pub unsafe fn heap_malloc_aligned_at(
@@ -1318,8 +1350,9 @@ pub unsafe fn heap_stats_get(h: *mut Heap, out: *mut crate::stats::Stats) -> boo
         return true;
     }
     crate::stats::clear(out);
+    (*h).stats.copy_into(out);
     if !(*h).inner.is_null() {
-        (*(*h).inner).stats.copy_into(out);
+        (*(*h).inner).stats.add_into(out);
     }
     true
 }
@@ -1340,6 +1373,7 @@ pub unsafe fn heap_stats_add_into(h: *mut Heap, out: *mut crate::stats::Stats) {
     if (*h).is_main {
         return;
     }
+    (*h).stats.add_into(out);
     if !(*h).inner.is_null() {
         (*(*h).inner).stats.add_into(out);
     }
@@ -1350,6 +1384,14 @@ pub unsafe fn heap_stats_merge_to_subproc(h: *mut Heap) {
         return;
     }
     (*(*h).subproc).stats.take_from(&(*(*h).inner).stats);
+}
+
+/// Add theap stats to the parent heap and clear the theap (`mi_theap_stats_merge_to_heap`).
+pub unsafe fn theap_stats_merge_to_heap(th: *mut ThreadHeap) {
+    if th.is_null() || (*th).owner.is_null() {
+        return;
+    }
+    (*(*th).owner).stats.take_from(&(*th).stats);
 }
 
 /// `mi_heap_set_numa_affinity`. Negative `numa_node` means any node.

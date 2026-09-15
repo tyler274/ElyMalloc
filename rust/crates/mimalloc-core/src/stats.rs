@@ -99,7 +99,7 @@ pub struct Stats {
     pub threads: StatCount,
     pub malloc_normal: StatCount,
     pub malloc_huge: StatCount,
-    pub malloc_requested: StatCount,
+    pub malloc_requested: StatCounter,
     pub mmap_calls: StatCounter,
     pub commit_calls: StatCounter,
     pub reset_calls: StatCounter,
@@ -120,11 +120,16 @@ pub struct Stats {
     pub segments_reserved: StatCount,
     pub heaps: StatCount,
     pub theaps: StatCount,
+    pub pages_os_abandoned: StatCount,
+    pub pages_os_allocated: StatCount,
     pub pages_reclaim_on_alloc: StatCounter,
     pub pages_reclaim_on_free: StatCounter,
     pub pages_reabandon_full: StatCounter,
     pub pages_unabandon_busy_wait: StatCounter,
     pub heaps_delete_wait: StatCounter,
+    pub pages_stat_updates: StatCounter,
+    pub pages_stat_update_count: StatCounter,
+    pub profile_samples: StatCounter,
     pub stat_reserved: [StatCount; 4],
     pub stat_counter_reserved: [StatCounter; 4],
     pub malloc_bins: [StatCount; BIN_HUGE + 1],
@@ -144,9 +149,7 @@ pub unsafe fn fill(out: *mut Stats) {
     (*out).pages.total = PAGES_TOTAL.load(Ordering::Relaxed);
     (*out).pages.peak = PAGES_PEAK.load(Ordering::Relaxed);
     (*out).heaps.current = HEAPS_CURRENT.load(Ordering::Relaxed);
-    (*out).malloc_requested.current = MALLOC_CURRENT.load(Ordering::Relaxed);
     (*out).malloc_requested.total = MALLOC_TOTAL.load(Ordering::Relaxed);
-    (*out).malloc_requested.peak = MALLOC_PEAK.load(Ordering::Relaxed);
     (*out).malloc_normal.current = MALLOC_CURRENT.load(Ordering::Relaxed);
     (*out).malloc_normal.total = MALLOC_TOTAL.load(Ordering::Relaxed);
     (*out).malloc_normal.peak = MALLOC_PEAK.load(Ordering::Relaxed);
@@ -162,6 +165,9 @@ pub unsafe fn fill(out: *mut Stats) {
     (*out).purge_calls.total = PURGE_CALLS.load(Ordering::Relaxed);
     (*out).arena_count.total = ARENA_COUNT.load(Ordering::Relaxed);
     (*out).malloc_guarded_count.total = GUARDED_COUNT.load(Ordering::Relaxed);
+    (*out).pages_os_allocated.current = PAGES_OS_ALLOCATED.load(Ordering::Relaxed);
+    (*out).pages_os_allocated.total = PAGES_OS_ALLOCATED.load(Ordering::Relaxed);
+    (*out).profile_samples.total = PROFILE_SAMPLES.load(Ordering::Relaxed);
 }
 
 pub unsafe fn clear(out: *mut Stats) {
@@ -272,12 +278,10 @@ impl AllocStats {
         if out.is_null() {
             return;
         }
-        (*out).malloc_requested.current = self.malloc_current.load(Ordering::Relaxed);
         (*out).malloc_requested.total = self.malloc_total.load(Ordering::Relaxed);
-        (*out).malloc_requested.peak = self.malloc_peak.load(Ordering::Relaxed);
-        (*out).malloc_normal.current = (*out).malloc_requested.current;
-        (*out).malloc_normal.total = (*out).malloc_requested.total;
-        (*out).malloc_normal.peak = (*out).malloc_requested.peak;
+        (*out).malloc_normal.current = self.malloc_current.load(Ordering::Relaxed);
+        (*out).malloc_normal.total = self.malloc_total.load(Ordering::Relaxed);
+        (*out).malloc_normal.peak = self.malloc_peak.load(Ordering::Relaxed);
         (*out).malloc_normal_count.total = self.malloc_count.load(Ordering::Relaxed);
         (*out).pages.current = self.pages_current.load(Ordering::Relaxed);
         (*out).pages.total = self.pages_total.load(Ordering::Relaxed);
@@ -288,14 +292,12 @@ impl AllocStats {
         if out.is_null() {
             return;
         }
-        (*out).malloc_requested.current += self.malloc_current.load(Ordering::Relaxed);
         (*out).malloc_requested.total += self.malloc_total.load(Ordering::Relaxed);
-        if self.malloc_peak.load(Ordering::Relaxed) > (*out).malloc_requested.peak {
-            (*out).malloc_requested.peak = self.malloc_peak.load(Ordering::Relaxed);
+        (*out).malloc_normal.current += self.malloc_current.load(Ordering::Relaxed);
+        (*out).malloc_normal.total += self.malloc_total.load(Ordering::Relaxed);
+        if self.malloc_peak.load(Ordering::Relaxed) > (*out).malloc_normal.peak {
+            (*out).malloc_normal.peak = self.malloc_peak.load(Ordering::Relaxed);
         }
-        (*out).malloc_normal.current = (*out).malloc_requested.current;
-        (*out).malloc_normal.total = (*out).malloc_requested.total;
-        (*out).malloc_normal.peak = (*out).malloc_requested.peak;
         (*out).malloc_normal_count.total += self.malloc_count.load(Ordering::Relaxed);
         (*out).pages.current += self.pages_current.load(Ordering::Relaxed);
         (*out).pages.total += self.pages_total.load(Ordering::Relaxed);
@@ -324,6 +326,8 @@ pub fn reset() {
     PURGE_CALLS.store(0, Ordering::Relaxed);
     ARENA_COUNT.store(0, Ordering::Relaxed);
     GUARDED_COUNT.store(0, Ordering::Relaxed);
+    PAGES_OS_ALLOCATED.store(0, Ordering::Relaxed);
+    PROFILE_SAMPLES.store(0, Ordering::Relaxed);
 }
 
 pub fn get_bin_size(bin: usize) -> usize {
@@ -341,9 +345,19 @@ pub fn malloc_add(bytes: usize) {
 }
 
 static GUARDED_COUNT: AtomicI64 = AtomicI64::new(0);
+static PAGES_OS_ALLOCATED: AtomicI64 = AtomicI64::new(0);
+static PROFILE_SAMPLES: AtomicI64 = AtomicI64::new(0);
 
 pub fn malloc_guarded_add() {
     GUARDED_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn pages_os_allocated_add() {
+    PAGES_OS_ALLOCATED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn profile_sample_add() {
+    PROFILE_SAMPLES.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn malloc_sub(bytes: usize) {

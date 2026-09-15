@@ -28,6 +28,23 @@ pub unsafe fn fill(p: *mut u8, byte: u8, n: usize) {
     ptr::write_bytes(p, byte, n);
 }
 
+/// Word-sized zero of the user payload (C `mi_memzero_block` on the small zalloc path).
+#[inline]
+pub unsafe fn zero_user(p: *mut u8, n: usize) {
+    if p.is_null() || n == 0 {
+        return;
+    }
+    let words = n / crate::PTR_SIZE;
+    let w = p as *mut usize;
+    for i in 0..words {
+        *w.add(i) = 0;
+    }
+    let rem = n % crate::PTR_SIZE;
+    if rem != 0 {
+        ptr::write_bytes(p.add(words * crate::PTR_SIZE), 0, rem);
+    }
+}
+
 /// Non-overlapping copy (realloc).
 #[inline]
 pub unsafe fn copy(dst: *mut u8, src: *const u8, n: usize) {

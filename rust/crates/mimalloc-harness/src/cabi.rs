@@ -209,6 +209,15 @@ pub fn run() -> Result<()> {
             }) {
                 bail!("expected malloc/free/mi_malloc in {so:?}");
             }
+            if text.lines().any(|l| {
+                let sym = l.split_whitespace().last().unwrap_or("");
+                matches!(
+                    sym,
+                    "strdup" | "reallocarray" | "__libc_malloc" | "__libc_free" | "__libc_realloc"
+                )
+            }) {
+                bail!("libc extras (strdup/reallocarray/__libc_*) must stay unexported in {so:?}");
+            }
         }
     }
 
@@ -337,6 +346,14 @@ pub fn run() -> Result<()> {
             &chaos,
         )?;
         run_ok(&chaos, &[] as &[&str], &libpath)?;
+        let profile = out.join("mi-profile");
+        compile(
+            &cc,
+            &["-O2", "-pthread", "-DNDEBUG", &inc_arg],
+            &[&c_tests.join("profile.c"), Path::new(&so_s)],
+            &profile,
+        )?;
+        run_ok(&profile, &[] as &[&str], &libpath)?;
     }
 
     println!("c-abi checks passed");

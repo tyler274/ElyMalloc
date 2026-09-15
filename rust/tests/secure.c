@@ -101,9 +101,11 @@ int main(void) {
       die("malloc2");
     }
     mi_free((char*)p + 8);
-    if (mi_usable_size((char*)p + 8) != 0) {
-      die("interior usable");
+    size_t rem = mi_usable_size((char*)p + 8);
+    if (rem == 0 || rem > 64) {
+      die("interior usable remaining");
     }
+    memset(p, 0xAB, 64);
     mi_free(p);
   }
 
