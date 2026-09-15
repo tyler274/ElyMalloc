@@ -16,5 +16,5 @@ if [[ -z "${BUN:-}" ]] && ! command -v bun >/dev/null 2>&1; then
 fi
 
 cd rust
-echo "==> cargo run -p mimalloc-harness -- projects"
-exec cargo run -q -p mimalloc-harness -- projects "$@"
+echo "==> cargo run -p elymalloc-harness -- projects"
+exec cargo run -q -p elymalloc-harness -- projects "$@"

@@ -1,24 +1,24 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/mimalloc-core",
-    "crates/mimalloc-c",
-    "crates/mimalloc-wasm-smoke",
-    "crates/mimalloc-leptos-smoke",
-    "crates/mimalloc-harness",
-    "crates/mimalloc-alloc-stress",
-    "crates/mimalloc-bench",
+    "crates/elymalloc-core",
+    "crates/elymalloc-c",
+    "crates/elymalloc-wasm-smoke",
+    "crates/elymalloc-leptos-smoke",
+    "crates/elymalloc-harness",
+    "crates/elymalloc-alloc-stress",
+    "crates/elymalloc-bench",
     "crates/vma-core",
     "crates/vma-c",
 ]
-default-members = ["crates/mimalloc-core", "crates/mimalloc-c"]
+default-members = ["crates/elymalloc-core", "crates/elymalloc-c"]
 
 [workspace.package]
 version = "3.5.2"
 edition = "2021"
 license = "MIT"
-authors = ["mimalloc contributors"]
-description = "Pure-Rust rewrite of mimalloc with a C ABI drop-in"
+authors = ["ElyMalloc contributors"]
+description = "ElyMalloc: pure-Rust rewrite of mimalloc with a C ABI drop-in"
 
 [workspace.dependencies]
 libc = { version = "0.2", default-features = false }

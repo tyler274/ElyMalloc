@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kani proofs for mimalloc-core and vma-core (integer models, no mmap/SIMD).
+# Kani proofs for elymalloc-core and vma-core (integer models, no mmap/SIMD).
 # No-ops if cargo-kani is not on PATH (`nix develop` or `cargo kani setup`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,5 +10,5 @@ if ! cargo kani --version >/dev/null 2>&1; then
   echo "install: nix develop   # or: cargo install --locked kani-verifier && cargo kani setup"
   exit 0
 fi
-cargo kani -p mimalloc-core
+cargo kani -p elymalloc-core
 exec cargo kani -p vma-core

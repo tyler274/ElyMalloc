@@ -32,7 +32,7 @@ linux_x64() {
     -e CARGO_TARGET_DIR=/tmp/target \
     "${vols[@]}" \
     "$IMAGE" \
-    bash -c 'cargo test -p mimalloc-core --release --offline -- --test-threads=1 && cargo build --release --offline -p mimalloc-c && cargo run --offline -p mimalloc-harness -- c-abi'
+    bash -c 'cargo test -p elymalloc-core --release --offline -- --test-threads=1 && cargo build --release --offline -p elymalloc-c && cargo run --offline -p elymalloc-harness -- c-abi'
 }
 
 cross_qemu() {
@@ -59,14 +59,14 @@ cross_qemu() {
       export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu"
       export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc
       export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUNNER="qemu-riscv64 -L /usr/riscv64-linux-gnu"
-      cargo test --offline -p mimalloc-core --release --target aarch64-unknown-linux-gnu -- --test-threads=1
-      cargo build --offline --release -p mimalloc-c --target aarch64-unknown-linux-gnu
+      cargo test --offline -p elymalloc-core --release --target aarch64-unknown-linux-gnu -- --test-threads=1
+      cargo build --offline --release -p elymalloc-c --target aarch64-unknown-linux-gnu
       aarch64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-aarch64
       qemu-aarch64 -L /usr/aarch64-linux-gnu \
         -E LD_PRELOAD="$CARGO_TARGET_DIR/aarch64-unknown-linux-gnu/release/libmimalloc.so" \
         /tmp/mi-smoke-aarch64
-      cargo test --offline -p mimalloc-core --release --target riscv64gc-unknown-linux-gnu -- --test-threads=1
-      cargo build --offline --release -p mimalloc-c --target riscv64gc-unknown-linux-gnu
+      cargo test --offline -p elymalloc-core --release --target riscv64gc-unknown-linux-gnu -- --test-threads=1
+      cargo build --offline --release -p elymalloc-c --target riscv64gc-unknown-linux-gnu
       riscv64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-riscv
       qemu-riscv64 -L /usr/riscv64-linux-gnu \
         -E LD_PRELOAD="$CARGO_TARGET_DIR/riscv64gc-unknown-linux-gnu/release/libmimalloc.so" \

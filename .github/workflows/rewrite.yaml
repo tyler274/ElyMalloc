@@ -1,17 +1,20 @@
-# Rewrite (Rust mimalloc) - does not replace C `test.yaml`.
+# ElyMalloc rewrite CI - does not replace C `test.yaml`.
 name: Rewrite
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - "rust/**"
+      - "flake.nix"
       - ".github/workflows/rewrite.yaml"
       - "include/**"
       - "test/**"
   pull_request:
     paths:
       - "rust/**"
+      - "flake.nix"
       - ".github/workflows/rewrite.yaml"
       - "include/**"
       - "test/**"
@@ -30,9 +33,9 @@ jobs:
       - name: Tests
         working-directory: rust
         run: |
-          cargo test -p mimalloc-core --release -- --test-threads=1
-          cargo build --release -p mimalloc-c
-          cargo run -p mimalloc-harness -- c-abi
+          cargo test -p elymalloc-core --release -- --test-threads=1
+          cargo build --release -p elymalloc-c
+          cargo run -p elymalloc-harness -- c-abi
 
   linux-aarch64:
     name: Linux aarch64 gnu/musl (qemu)
@@ -54,11 +57,11 @@ jobs:
           MIMALLOC_QEMU: "1"
           RUST_TEST_THREADS: "1"
         run: |
-          cargo test -p mimalloc-core --release --target aarch64-unknown-linux-gnu -- --test-threads=1
-          cargo build --release -p mimalloc-c --target aarch64-unknown-linux-gnu
-          cargo check -p mimalloc-core --target aarch64-unknown-linux-musl
-          cargo build --release -p mimalloc-c --target aarch64-unknown-linux-musl || \
-            cargo check -p mimalloc-c --target aarch64-unknown-linux-musl
+          cargo test -p elymalloc-core --release --target aarch64-unknown-linux-gnu -- --test-threads=1
+          cargo build --release -p elymalloc-c --target aarch64-unknown-linux-gnu
+          cargo check -p elymalloc-core --target aarch64-unknown-linux-musl
+          cargo build --release -p elymalloc-c --target aarch64-unknown-linux-musl || \
+            cargo check -p elymalloc-c --target aarch64-unknown-linux-musl
           aarch64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-aarch64
           qemu-aarch64 -L /usr/aarch64-linux-gnu \
             -E LD_PRELOAD="$PWD/target/aarch64-unknown-linux-gnu/release/libmimalloc.so" \
@@ -83,8 +86,8 @@ jobs:
           MIMALLOC_QEMU: "1"
           RUST_TEST_THREADS: "1"
         run: |
-          cargo test -p mimalloc-core --release --target riscv64gc-unknown-linux-gnu -- --test-threads=1
-          cargo build --release -p mimalloc-c --target riscv64gc-unknown-linux-gnu
+          cargo test -p elymalloc-core --release --target riscv64gc-unknown-linux-gnu -- --test-threads=1
+          cargo build --release -p elymalloc-c --target riscv64gc-unknown-linux-gnu
           riscv64-linux-gnu-gcc -O2 -pthread tests/smoke.c -o /tmp/mi-smoke-riscv
           qemu-riscv64 -L /usr/riscv64-linux-gnu \
             -E LD_PRELOAD="$PWD/target/riscv64gc-unknown-linux-gnu/release/libmimalloc.so" \
@@ -99,9 +102,9 @@ jobs:
       - name: Tests
         working-directory: rust
         run: |
-          cargo test -p mimalloc-core --release -- --test-threads=1
-          cargo build --release -p mimalloc-c
-          cargo run -p mimalloc-harness -- c-abi
+          cargo test -p elymalloc-core --release -- --test-threads=1
+          cargo build --release -p elymalloc-c
+          cargo run -p elymalloc-harness -- c-abi
 
   windows-x64:
     name: Windows x64 (core + dll smoke)
@@ -113,22 +116,37 @@ jobs:
         working-directory: rust
         shell: bash
         run: |
-          cargo test -p mimalloc-core --release -- --test-threads=1
-          cargo build --release -p mimalloc-c
-          cargo run -p mimalloc-harness -- c-abi
+          cargo test -p elymalloc-core --release -- --test-threads=1
+          cargo build --release -p elymalloc-c
+          cargo run -p elymalloc-harness -- c-abi
 
   kani:
     name: Kani proofs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: mimalloc-core
+      - name: elymalloc-core
         uses: model-checking/kani-github-action@v1
         with:
           working-directory: rust
-          args: -p mimalloc-core
+          args: -p elymalloc-core
       - name: vma-core
         uses: model-checking/kani-github-action@v1
         with:
           working-directory: rust
           args: -p vma-core
+
+  nixos-malloc:
+    name: NixOS VM (memoryAllocator preload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4ci.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          ls -l /dev/kvm
+      - name: Boot NixOS with ElyMalloc as system malloc
+        run: nix build -L .#nixos-malloc

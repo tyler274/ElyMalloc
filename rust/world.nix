@@ -1,8 +1,8 @@
 # Real workloads of typical NixOS-world packages against this rewrite.
 # Not a substitute for Firefox/Chromium/Electron: those are
-# rust/browsers.nix and `mimalloc-harness browsers`. Compile/link success
+# rust/browsers.nix and `elymalloc-harness browsers`. Compile/link success
 # is not enough: each binary must run. The live-host harness
-# (`mimalloc-harness world`) also compares rewrite vs C vs libc using
+# (`elymalloc-harness world`) also compares rewrite vs C vs libc using
 # packages from NIXOS_CONFIG=/etc/nixos.
 {
   lib,

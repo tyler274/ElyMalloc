@@ -49,9 +49,9 @@ rustPlatform.buildRustPackage {
   '';
   buildPhase = ''
     runHook preBuild
-    cargo build --offline --release ${targetFlag} -p mimalloc-c
-    cargo build --offline --release ${targetFlag} -p mimalloc-c --features secure --target-dir target/mimalloc-secure
-    cargo build --offline --release ${targetFlag} -p mimalloc-bench
+    cargo build --offline --release ${targetFlag} -p elymalloc-c
+    cargo build --offline --release ${targetFlag} -p elymalloc-c --features secure --target-dir target/mimalloc-secure
+    cargo build --offline --release ${targetFlag} -p elymalloc-bench
     runHook postBuild
   '';
 
@@ -75,18 +75,18 @@ rustPlatform.buildRustPackage {
     runHook preCheck
     # Core tests share the process heap; parallel rustc threads flake
     # (chaos_cross_thread_free cookies, heap_visit live counts).
-    cargo test --offline -p mimalloc-core --release ${targetFlag} -- --test-threads=1
-    cargo test --offline -p mimalloc-wasm-smoke --release ${targetFlag}
-    cargo test --offline -p mimalloc-leptos-smoke --release ${targetFlag}
-    cargo test --offline -p mimalloc-harness --release ${targetFlag}
-    cargo test --offline -p mimalloc-alloc-stress --release ${targetFlag}
+    cargo test --offline -p elymalloc-core --release ${targetFlag} -- --test-threads=1
+    cargo test --offline -p elymalloc-wasm-smoke --release ${targetFlag}
+    cargo test --offline -p elymalloc-leptos-smoke --release ${targetFlag}
+    cargo test --offline -p elymalloc-harness --release ${targetFlag}
+    cargo test --offline -p elymalloc-alloc-stress --release ${targetFlag}
     ${lib.optionalString (cargoTarget == null) ''
-    cargo check --offline -p mimalloc-core --target wasm32-unknown-unknown
-    cargo check --offline -p mimalloc-wasm-smoke --target wasm32-unknown-unknown
-    cargo check --offline -p mimalloc-leptos-smoke --target wasm32-unknown-unknown
+    cargo check --offline -p elymalloc-core --target wasm32-unknown-unknown
+    cargo check --offline -p elymalloc-wasm-smoke --target wasm32-unknown-unknown
+    cargo check --offline -p elymalloc-leptos-smoke --target wasm32-unknown-unknown
     ''}
-    cargo build --release -p mimalloc-c ${targetFlag}
-    cargo build --release -p mimalloc-c --features secure --target-dir target/mimalloc-secure ${targetFlag}
+    cargo build --release -p elymalloc-c ${targetFlag}
+    cargo build --release -p elymalloc-c --features secure --target-dir target/mimalloc-secure ${targetFlag}
 
     so="target/${target}/release/libmimalloc.so"
     if [ ! -f "$so" ]; then
@@ -97,7 +97,7 @@ rustPlatform.buildRustPackage {
       exit 1
     fi
 
-    cargo build -p mimalloc-c ${targetFlag}
+    cargo build -p elymalloc-c ${targetFlag}
     debug_so="target/${target}/debug/libmimalloc.so"
     if [ ! -f "$debug_so" ]; then
       debug_so="target/debug/libmimalloc.so"
@@ -110,7 +110,7 @@ rustPlatform.buildRustPackage {
     export C_TESTS=${./tests}
     export UPSTREAM_TESTS=${../test}
     export OUT="$TMPDIR/mi-c-abi"
-    cargo run --offline --release ${targetFlag} -p mimalloc-harness -- c-abi
+    cargo run --offline --release ${targetFlag} -p elymalloc-harness -- c-abi
     secure_so="target/mimalloc-secure/${target}/release/libmimalloc.so"
     if [ ! -f "$secure_so" ]; then
       secure_so="target/mimalloc-secure/release/libmimalloc.so"
@@ -124,7 +124,7 @@ rustPlatform.buildRustPackage {
     unset DEBUG_SO
     export SO="$TMPDIR/mi-secure-so/libmimalloc-secure.so"
     export OUT="$TMPDIR/mi-c-abi-secure"
-    cargo run --offline --release ${targetFlag} -p mimalloc-harness -- c-abi
+    cargo run --offline --release ${targetFlag} -p elymalloc-harness -- c-abi
     runHook postCheck
   '';
 
@@ -190,13 +190,13 @@ rustPlatform.buildRustPackage {
     cp ${./cmake/mimalloc-config.cmake} $out/lib/cmake/mimalloc/mimalloc-config.cmake
     cp ${./cmake/mimalloc-config-version.cmake} $out/lib/cmake/mimalloc/mimalloc-config-version.cmake
 
-    bench="target/${target}/release/mimalloc-bench"
+    bench="target/${target}/release/elymalloc-bench"
     if [ ! -f "$bench" ]; then
-      bench="target/release/mimalloc-bench"
+      bench="target/release/elymalloc-bench"
     fi
     if [ -f "$bench" ]; then
       mkdir -p $out/bin
-      cp "$bench" $out/bin/mimalloc-bench
+      cp "$bench" $out/bin/elymalloc-bench
     fi
 
     cat > $out/lib/pkgconfig/mimalloc.pc <<EOF
@@ -205,7 +205,7 @@ libdir=''${prefix}/lib
 includedir=''${prefix}/include
 
 Name: mimalloc
-Description: Pure-Rust mimalloc rewrite
+Description: ElyMalloc (pure-Rust drop-in for mimalloc)
 Version: 3.5.2
 Libs: -L''${libdir} -lmimalloc-secure
 Cflags: -I''${includedir}
@@ -214,8 +214,8 @@ EOF
   '';
 
   meta = with lib; {
-    description = "Pure-Rust rewrite of mimalloc with a C ABI drop-in";
-    homepage = "https://github.com/microsoft/mimalloc";
+    description = "ElyMalloc: pure-Rust rewrite of mimalloc with a C ABI drop-in";
+    homepage = "https://github.com/tyler274/ElyMalloc";
     license = licenses.mit;
     platforms = platforms.linux;
   };

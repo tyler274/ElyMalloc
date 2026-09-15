@@ -8,11 +8,11 @@ rustflags = ["-C", "target-feature=-crt-static"]
 [target.riscv64gc-unknown-linux-musl]
 rustflags = ["-C", "target-feature=-crt-static"]
 
-# cargo test -p mimalloc-core --target wasm32-wasip1
+# cargo test -p elymalloc-core --target wasm32-wasip1
 [target.wasm32-wasip1]
 runner = "wasmtime"
 
-# mimalloc-core tests share the process-global heap/page map. Parallel
+# elymalloc-core tests share the process-global heap/page map. Parallel
 # rustc test threads reuse live blocks (NixOS checkPhase: chaos cookies
 # and heap_visit counts). Force one test at a time.
 [env]

@@ -159,6 +159,66 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "elymalloc-alloc-stress"
+version = "3.5.2"
+dependencies = [
+ "elymalloc-core",
+]
+
+[[package]]
+name = "elymalloc-bench"
+version = "3.5.2"
+dependencies = [
+ "elymalloc-core",
+ "libc",
+]
+
+[[package]]
+name = "elymalloc-c"
+version = "3.5.2"
+dependencies = [
+ "elymalloc-core",
+ "libc",
+]
+
+[[package]]
+name = "elymalloc-core"
+version = "3.5.2"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "elymalloc-harness"
+version = "3.5.2"
+dependencies = [
+ "anyhow",
+ "clap",
+ "regex",
+ "wait-timeout",
+ "walkdir",
+ "wasmparser",
+ "which",
+]
+
+[[package]]
+name = "elymalloc-leptos-smoke"
+version = "3.5.2"
+dependencies = [
+ "any_spawner",
+ "elymalloc-core",
+ "reactive_graph",
+]
+
+[[package]]
+name = "elymalloc-wasm-smoke"
+version = "3.5.2"
+dependencies = [
+ "elymalloc-core",
+]
+
+[[package]]
 name = "env_home"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -367,66 +427,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "mimalloc-alloc-stress"
-version = "3.5.2"
-dependencies = [
- "mimalloc-core",
-]
-
-[[package]]
-name = "mimalloc-bench"
-version = "3.5.2"
-dependencies = [
- "libc",
- "mimalloc-core",
-]
-
-[[package]]
-name = "mimalloc-c"
-version = "3.5.2"
-dependencies = [
- "libc",
- "mimalloc-core",
-]
-
-[[package]]
-name = "mimalloc-core"
-version = "3.5.2"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "mimalloc-harness"
-version = "3.5.2"
-dependencies = [
- "anyhow",
- "clap",
- "regex",
- "wait-timeout",
- "walkdir",
- "wasmparser",
- "which",
-]
-
-[[package]]
-name = "mimalloc-leptos-smoke"
-version = "3.5.2"
-dependencies = [
- "any_spawner",
- "mimalloc-core",
- "reactive_graph",
-]
-
-[[package]]
-name = "mimalloc-wasm-smoke"
-version = "3.5.2"
-dependencies = [
- "mimalloc-core",
-]
 
 [[package]]
 name = "once_cell"

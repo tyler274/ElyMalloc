@@ -1,5 +1,5 @@
 /* Allocator microbench: wall time + user-mode instructions (perf_event_open).
- * Built by mimalloc-harness and run under LD_PRELOAD of each malloc. */
+ * Built by elymalloc-harness and run under LD_PRELOAD of each malloc. */
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>

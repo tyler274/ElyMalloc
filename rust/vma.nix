@@ -71,7 +71,7 @@ rustPlatform.buildRustPackage {
     fi
     export CC=${lib.escapeShellArg ccBin}
     export VMA_SO="$(pwd)/$so"
-    cargo run --offline --release ${targetFlag} -p mimalloc-harness -- vma
+    cargo run --offline --release ${targetFlag} -p elymalloc-harness -- vma
     runHook postCheck
   '';
 

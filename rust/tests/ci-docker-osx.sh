@@ -219,9 +219,9 @@ if command -v brew >/dev/null 2>&1 && [[ -d "$(brew --prefix llvm 2>/dev/null)/b
   export PATH="$(brew --prefix llvm)/bin:$PATH"
 fi
 cd "$HOME/mimalloc/rust"
-cargo test -p mimalloc-core --release
-cargo build --release -p mimalloc-c
-cargo run -p mimalloc-harness -- c-abi
+cargo test -p elymalloc-core --release
+cargo build --release -p elymalloc-c
+cargo run -p elymalloc-harness -- c-abi
 EOF
 }
 
