@@ -54,7 +54,7 @@ nix flake check
 # or individually:
 nix build .#checks.x86_64-linux.glibc
 nix build .#checks.x86_64-linux.musl
-nix build .#mimalloc-musl
+nix build .#elymalloc-musl
 # rebuild mold with this library statically linked:
 nix build .#mold
 nix build .#checks.x86_64-linux.mold
@@ -123,20 +123,32 @@ nix build .#vma
 
 ## NixOS
 
-The flake overlay replaces `pkgs.mimalloc` with this library. Mitigations are always on; `mimalloc.override { secureBuild = true; }` is accepted so a live NixOS overlay that used C mimalloc's flag keeps evaluating.
+The flake overlay adds **`pkgs.elymalloc`** and leaves **`pkgs.mimalloc`** as C mimalloc. NixOS `environment.memoryAllocator.provider` is an enum; stock nixpkgs has `"mimalloc"` but not `"elymalloc"`. This tree ships a drop-in `nixos/modules/config/malloc.nix` (the nixpkgs PR) that adds `"elymalloc"` and preloads both SONAMEs.
 
 ```nix
 {
-  # `path:` copies gitignored rust/target (~4GiB) into the store; use git+file or github.
-  inputs.mimalloc-rs.url = "github:tyler274/ElyMalloc";
+  inputs.elymalloc.url = "github:tyler274/ElyMalloc";
   # and in nixos configuration:
-  nixpkgs.overlays = [ mimalloc-rs.overlays.default ];
-  environment.memoryAllocator.provider = "mimalloc";
-  # or: imports = [ mimalloc-rs.nixosModules.memoryAllocator ];
+  imports = [ elymalloc.nixosModules.memoryAllocator ];
+  environment.memoryAllocator.provider = "elymalloc";
 }
 ```
 
-`environment.memoryAllocator.provider = "mimalloc"` writes `${pkgs.mimalloc}/lib/libmimalloc.so` into `/etc/ld-nix.so.preload` (not `LD_PRELOAD`). On this rewrite that path is the Rust `cdylib`.
+`nixosModules.memoryAllocator` applies `overlays.default` and replaces nixpkgs `config/malloc.nix` so `"elymalloc"` is a valid provider (until that lands upstream). It defaults the provider to `"elymalloc"`.
+
+If the overlay is already in `nixpkgs.overlays` (so mold rebuild order stays explicit), import only the malloc extension:
+
+```nix
+nixpkgs.overlays = [ elymalloc.overlays.default ];
+imports = [ elymalloc.nixosModules.malloc ];
+environment.memoryAllocator.provider = "elymalloc";
+```
+
+`provider = "elymalloc"` writes `${pkgs.elymalloc}/lib/libmimalloc.so` and `libmimalloc-secure.so.3` into `/etc/ld-nix.so.preload`. The C ABI/SONAME stay mimalloc; the **NixOS provider name** is ElyMalloc (`elymalloc`, lowercase like `jemalloc`).
+
+`provider = "mimalloc"` continues to mean **C** mimalloc (`pkgs.mimalloc`). Do not overlay-replace `pkgs.mimalloc` if you want both providers. A migration hatch `overlays.replaceMimalloc` still exists for old configs.
+
+Mitigations are always on in ElyMalloc; `elymalloc.override { secureBuild = true; }` is accepted so overlays that used C mimalloc's flag keep evaluating.
 
 ### World packages (build + run)
 
@@ -244,7 +256,7 @@ cd rust
 ./tests/bench.sh
 # or: cargo run -p elymalloc-harness -- bench
 cargo run --release -p elymalloc-bench
-nix build .#mimalloc   # installs $out/bin/elymalloc-bench
+nix build .#elymalloc   # installs $out/bin/elymalloc-bench
 ```
 
 `nix develop` provides `hyperfine`, `perf`, and `cargo-kani` (Kani 0.67.0 release bundle). Set `HYPERFINE=1` to also run hyperfine on the C bench binary for each allocator.

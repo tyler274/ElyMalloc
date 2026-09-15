@@ -1,10 +1,15 @@
+# Nixpkgs package: `pkgs.elymalloc` (`pkgs/by-name/el/elymalloc`).
+# This overlay uses the workspace tree as `src`. Installed libs keep the
+# C mimalloc ABI (`libmimalloc.so.3`, `mi_*`) so `find_package(mimalloc)`
+# and `DT_NEEDED libmimalloc.so.3` still work.
 {
   lib,
   rustPlatform,
   stdenv,
   binutils,
   # NixOS `mimalloc.override { secureBuild = true; }` (C package). Mitigations
-  # are always on here; the flag is accepted so the live overlay keeps working.
+  # are always on here; the flag is accepted so overlays that used C mimalloc's
+  # flag keep evaluating when pointed at this package.
   secureBuild ? true,
   # When set (musl check/package), compile with this rustc target and musl cc
   # rather than rebuilding rustc against musl.
@@ -20,8 +25,10 @@ let
   ccBin = "${targetCc}/bin/${targetCc.targetPrefix}cc";
   cxxBin = "${targetCc}/bin/${targetCc.targetPrefix}c++";
 in
+# Nixpkgs package name: `pkgs.elymalloc` (by-name/el/elymalloc).
+# Installed libs keep the C mimalloc ABI (`libmimalloc.so.3`, `mi_*`).
 rustPlatform.buildRustPackage {
-  pname = "mimalloc";
+  pname = "elymalloc";
   version = "3.5.2";
 
   # Cargo workspace only. `src = ./.` would include gitignored `target/` when

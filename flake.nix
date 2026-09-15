@@ -49,73 +49,72 @@
           rustc = rust;
           cargo = rust;
         };
-      # Dual-SONAME preload (Cyrene's `/etc/ld-nix.so.preload`). Overlay is
-      # applied by `nixosModules.default` on a host, or by this flake's `pkgs`
-      # in `runNixOSTest` (where `nixpkgs.overlays` is read-only).
-      memoryAllocatorPreload =
-        { lib, pkgs, ... }:
-        {
-          environment.memoryAllocator.provider = lib.mkDefault "mimalloc";
-          environment.etc."ld-nix.so.preload".text = lib.mkForce ''
-            ${pkgs.mimalloc}/lib/libmimalloc.so
-            ${pkgs.mimalloc}/lib/libmimalloc-secure.so.3
-          '';
-        };
     in
     {
       overlays.default = final: prev: {
         kani = final.callPackage ./rust/kani.nix { };
-        mimalloc = final.callPackage ./rust/package.nix { };
-        # Rebuild mold with the rewrite statically linked (nixpkgs mold
-        # otherwise DT_NEEDEDs C libmimalloc-secure).
+        # First-class package for `environment.memoryAllocator.provider =
+        # "elymalloc"`. Does **not** replace `pkgs.mimalloc` (C mimalloc).
+        elymalloc = final.callPackage ./rust/package.nix { };
+        # Rebuild mold with ElyMalloc statically linked (nixpkgs mold
+        # otherwise DT_NEEDs C libmimalloc-secure).
         mold-unwrapped = final.callPackage ./rust/mold.nix {
           inherit (prev) mold-unwrapped;
-          # Don't re-run the mimalloc C ABI suite just to link mold.
-          mimalloc = final.mimalloc.overrideAttrs (_: {
+          mimalloc = final.elymalloc.overrideAttrs (_: {
             doCheck = false;
           });
         };
+      };
+
+      # Migration hatch: `pkgs.mimalloc` becomes ElyMalloc so existing
+      # `provider = "mimalloc"` configs keep the rewrite. Prefer
+      # `provider = "elymalloc"` + `overlays.default` for nixpkgs.
+      overlays.replaceMimalloc = final: prev: {
+        mimalloc = final.elymalloc;
       };
 
       packages = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
-          mimallocUnchecked = pkgs.mimalloc.overrideAttrs (_: {
+          elymallocUnchecked = pkgs.elymalloc.overrideAttrs (_: {
             doCheck = false;
           });
         in
         {
-          default = pkgs.mimalloc;
-          mimalloc = pkgs.mimalloc;
+          default = pkgs.elymalloc;
+          elymalloc = pkgs.elymalloc;
+          # Alias: `nix build .#mimalloc` still builds the rewrite.
+          mimalloc = pkgs.elymalloc;
           kani = pkgs.kani;
           mold = pkgs.mold;
           mold-unwrapped = pkgs.mold-unwrapped;
-          mimalloc-musl = pkgs.callPackage ./rust/package.nix {
+          elymalloc-musl = pkgs.callPackage ./rust/package.nix {
             rustPlatform = muslRustPlatform pkgs;
             cargoTarget = muslTargetFor pkgs;
             targetCc = pkgs.pkgsMusl.stdenv.cc;
           };
+          mimalloc-musl = self.packages.${system}.elymalloc-musl;
           world-preload = pkgs.callPackage ./rust/world.nix {
-            mimalloc = mimallocUnchecked;
+            mimalloc = elymallocUnchecked;
             # Vanilla nixpkgs mold DT_NEEDs C libmimalloc-secure; dual-soname
             # preload must make linking work without LD_LIBRARY_PATH.
             mold = nixpkgs.legacyPackages.${system}.mold;
             nodejs = pkgs.nodejs;
           };
-          browsers-preload = pkgs.callPackage ./rust/browsers.nix { mimalloc = mimallocUnchecked; };
-          live = pkgs.callPackage ./rust/live.nix { mimalloc = mimallocUnchecked; };
+          browsers-preload = pkgs.callPackage ./rust/browsers.nix { mimalloc = elymallocUnchecked; };
+          live = pkgs.callPackage ./rust/live.nix { mimalloc = elymallocUnchecked; };
           vma = pkgs.callPackage ./rust/vma.nix { };
           nixos-malloc =
             let
-              testPkgs = pkgs.extend (_: _: { mimalloc = mimallocUnchecked; });
+              testPkgs = pkgs.extend (_: _: { elymalloc = elymallocUnchecked; });
             in
             testPkgs.testers.runNixOSTest {
-              name = "mimalloc-memory-allocator";
+              name = "elymalloc-memory-allocator";
               nodes.machine =
                 { pkgs, ... }:
                 {
-                  imports = [ memoryAllocatorPreload ];
+                  imports = [ ./nixos/modules/elymalloc.nix ];
                   environment.systemPackages = [
                     pkgs.hello
                     pkgs.python3
@@ -126,6 +125,7 @@
                 };
               testScript = ''
                 machine.wait_for_unit("multi-user.target")
+                machine.succeed("grep -q malloc-provider-elymalloc /etc/ld-nix.so.preload")
                 machine.succeed("grep -q libmimalloc.so /etc/ld-nix.so.preload")
                 machine.succeed("grep -q libmimalloc-secure.so.3 /etc/ld-nix.so.preload")
                 machine.succeed("hello")
@@ -142,14 +142,14 @@
 
       checks = forAllSystems (system: {
         # `buildRustPackage` runs cargo tests + C ABI / LD_PRELOAD checks.
-        glibc = self.packages.${system}.mimalloc;
-        musl = self.packages.${system}.mimalloc-musl;
+        glibc = self.packages.${system}.elymalloc;
+        musl = self.packages.${system}.elymalloc-musl;
         mold =
           let
             pkgs = pkgsFor system;
             moldBin = pkgs.mold-unwrapped;
           in
-          pkgs.runCommand "mold-mimalloc-static" {
+          pkgs.runCommand "mold-elymalloc-static" {
             nativeBuildInputs = [
               pkgs.gcc
               pkgs.binutils
@@ -222,13 +222,15 @@
           nixpkgs.overlays = [ self.overlays.default ];
         };
 
-      # Overlay plus `environment.memoryAllocator.provider = "mimalloc"`.
-      # On a host that already uses C mimalloc, this replaces `pkgs.mimalloc`
-      # so /etc/ld-nix.so.preload points at the rewrite (always-on secure).
+      # Extends `environment.memoryAllocator.provider` with `"elymalloc"`.
+      # Does not apply the overlay (needed by `runNixOSTest`).
+      nixosModules.malloc = ./nixos/modules/elymalloc.nix;
+
+      # Overlay + malloc module. `provider` defaults to `"elymalloc"`.
       nixosModules.memoryAllocator = {
         imports = [
           self.nixosModules.default
-          memoryAllocatorPreload
+          self.nixosModules.malloc
         ];
       };
     };
