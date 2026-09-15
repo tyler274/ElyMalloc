@@ -563,19 +563,43 @@ fn fuzz_heap_ops() {
     }
 }
 
-/// Large/over-aligned ops currently abort in `block_next` on a corrupted
-/// size-class free list. Stays ignored in default `cargo test` until those
-/// size classes pass host fuzz. `cargo test -- --ignored` or
-/// `MIMALLOC_CHAOS_STEPS` still runs the ignored body when selected.
+/// Empty cached pages that were `MADV_DONTNEED`'d must rebuild `local_free`
+/// on the next allocate (`collect` then malloc).
 #[test]
-#[ignore]
+fn collect_then_malloc_large_after_purge() {
+    crate::init();
+    unsafe {
+        const N: usize = 256 * 1024;
+        let mut bag: Vec<*mut u8> = Vec::new();
+        for _ in 0..16 {
+            let p = alloc::malloc(N);
+            assert!(!p.is_null());
+            core::ptr::write_bytes(p, 0xAB, N);
+            bag.push(p);
+        }
+        for p in bag {
+            alloc::free(p);
+        }
+        alloc::collect(false);
+        let p = alloc::malloc(N);
+        assert!(!p.is_null());
+        core::ptr::write_bytes(p, 0xCD, N);
+        alloc::free(p);
+    }
+}
+
+/// Large/over-aligned ops (64 KiB / 256 KiB classes, up to 4 KiB align).
+#[test]
 fn fuzz_heap_ops_aggressive() {
     let extra = chaos_steps();
     let seed0 = chaos_seed();
-    let base = if extra == 0 { 1_024 } else { extra };
+    let seeds = [seed0, seed0 ^ 0x9E37_79B9_7F4A_7C15, 99, 0xDEAD_BEEF];
+    let base = if extra == 0 { 3_072 } else { extra };
     unsafe {
-        let mut h = Heap::aggressive(seed0);
-        h.run(base);
+        for &seed in &seeds {
+            let mut h = Heap::aggressive(seed);
+            h.run(base);
+        }
     }
 }
 

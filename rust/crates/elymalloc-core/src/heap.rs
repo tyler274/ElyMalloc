@@ -1334,6 +1334,7 @@ pub unsafe fn collect_heap(h: *mut ThreadHeap, force: bool) {
                 let n = ((*page).capacity as usize).saturating_mul((*page).block_size);
                 if n >= os::min_purge_size() {
                     os::purge((*page).area, n);
+                    page::after_purge(page);
                 }
             }
             page = next;

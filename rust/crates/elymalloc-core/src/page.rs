@@ -93,6 +93,9 @@ pub const PAGE_MAGIC: u32 = 0x4D495041; // 'MIPA'
 const FLAG_ABANDONED: u32 = 1;
 const FLAG_ARENA: u32 = 2;
 const FLAG_GUARDED: u32 = 4;
+/// Empty cached page whose `area` was `MADV_DONTNEED`'d; free-list next pointers
+/// in the blocks are gone until [`revive_purged`].
+const FLAG_PURGED: u32 = 8;
 
 /// Match C `MI_DEBUG_UNINIT` / `MI_DEBUG_FREED` / `MI_DEBUG_PADDING`.
 pub const DEBUG_UNINIT: u8 = 0xD0;
@@ -169,6 +172,20 @@ impl Page {
     #[inline]
     pub fn set_guarded(&self) {
         self.flags.fetch_or(FLAG_GUARDED, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn is_purged(&self) -> bool {
+        self.flags.load(Ordering::Relaxed) & FLAG_PURGED != 0
+    }
+
+    #[inline]
+    fn set_purged(&self, yes: bool) {
+        if yes {
+            self.flags.fetch_or(FLAG_PURGED, Ordering::Release);
+        } else {
+            self.flags.fetch_and(!FLAG_PURGED, Ordering::Release);
+        }
     }
 }
 
@@ -535,6 +552,31 @@ pub unsafe fn create_huge(
     page
 }
 
+/// After `MADV_DONTNEED` on an empty cached page, drop `local_free` (it
+/// pointed into reset memory) and mark the page so the next pop rebuilds it.
+pub unsafe fn after_purge(page: *mut Page) {
+    if page.is_null() {
+        return;
+    }
+    (*page).local_free = ptr::null_mut();
+    (*page).set_purged(true);
+}
+
+/// Commit a purged empty page and rebuild `local_free` (C re-extends after reset).
+pub unsafe fn revive_purged(page: *mut Page) {
+    if page.is_null() || !(*page).is_purged() {
+        return;
+    }
+    let cap = (*page).capacity as usize;
+    let bs = (*page).block_size;
+    let n = cap.saturating_mul(bs);
+    if !(*page).area.is_null() && n != 0 {
+        os::reuse((*page).area, n);
+    }
+    init_local_free(page, (*page).area, bs, cap);
+    (*page).set_purged(false);
+}
+
 /// Unmap the page: clear the page map, drop guard protection, `munmap` unless arena-backed.
 pub unsafe fn destroy(page: *mut Page) {
     if page.is_null() {
@@ -585,6 +627,9 @@ pub unsafe fn collect(page: *mut Page) {
 /// so the encoded free-list pointer is not leaked to the caller.
 #[inline]
 pub unsafe fn pop_local(page: *mut Page) -> *mut u8 {
+    if (*page).is_purged() {
+        revive_purged(page);
+    }
     if (*page).capacity == 1 {
         if (*page).used != 0 || (*page).area.is_null() {
             return ptr::null_mut();
