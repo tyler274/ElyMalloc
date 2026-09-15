@@ -564,7 +564,9 @@ fn fuzz_heap_ops() {
 }
 
 /// Large/over-aligned ops currently abort in `block_next` on a corrupted
-/// size-class free list. Run with `--ignored` when hunting that bug.
+/// size-class free list. Stays ignored in default `cargo test` until those
+/// size classes pass host fuzz. `cargo test -- --ignored` or
+/// `MIMALLOC_CHAOS_STEPS` still runs the ignored body when selected.
 #[test]
 #[ignore]
 fn fuzz_heap_ops_aggressive() {

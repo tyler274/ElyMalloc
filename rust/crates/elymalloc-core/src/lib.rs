@@ -92,6 +92,7 @@ mod chaos;
 pub mod global;
 mod heap;
 pub mod hooks;
+mod layout;
 mod mem;
 pub mod options;
 mod os;
@@ -189,7 +190,7 @@ pub fn init() {
 ///
 /// # Safety
 /// Must run only from the `pthread_atfork` child handler, before other threads exist.
-#[cfg(unix)]
+#[cfg(all(unix, not(kani)))]
 pub(crate) unsafe fn fork_child() {
     INIT_LOCK.force_unlock();
     tls::force_unlock();
@@ -471,6 +472,63 @@ mod tests {
     fn free_null_is_ok() {
         unsafe {
             alloc::free(core::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn malloc_too_large_is_enomem() {
+        unsafe {
+            assert!(alloc::malloc(crate::MAX_ALLOC).is_null());
+            assert!(alloc::malloc(crate::MAX_ALLOC.saturating_sub(crate::PADDING_SIZE) + 1).is_null());
+            assert!(alloc::calloc(1, crate::MAX_ALLOC).is_null());
+            assert!(alloc::calloc(2, usize::MAX / 2 + 1).is_null());
+            assert!(alloc::realloc(core::ptr::null_mut(), crate::MAX_ALLOC).is_null());
+            assert!(alloc::reallocarray(core::ptr::null_mut(), 2, usize::MAX / 2 + 1).is_null());
+        }
+    }
+
+    #[test]
+    fn foreign_pointer_free_is_noop() {
+        unsafe {
+            let mut stack = 0xABu8;
+            alloc::free(core::ptr::addr_of_mut!(stack));
+        }
+    }
+
+    #[test]
+    fn page_map_multi_slice_and_unmapped() {
+        crate::init();
+        unsafe {
+            let p = alloc::malloc(16 * 1024);
+            assert!(!p.is_null());
+            let page = crate::page_map::get(p);
+            assert!(!page.is_null());
+            let base = (*page).map_base;
+            let sz = (*page).map_size;
+            assert_eq!(crate::page_map::get(base), page);
+            if sz >= 2 * crate::SLICE_SIZE {
+                assert_eq!(crate::page_map::get(base.add(crate::SLICE_SIZE)), page);
+            }
+            alloc::free(p);
+            assert!(crate::page_map::get(0x1000 as *const u8).is_null());
+        }
+    }
+
+    #[test]
+    fn arena_bump_exhaust_and_bad_align() {
+        unsafe {
+            let a = crate::mi_arena::reserve(crate::SLICE_SIZE * 4, true, false, true);
+            assert!(!a.is_null());
+            let p = crate::mi_arena::alloc(a, crate::SLICE_SIZE, crate::SLICE_SIZE);
+            assert!(!p.is_null());
+            let bad = crate::mi_arena::alloc(a, crate::SLICE_SIZE, 3);
+            assert!(bad.is_null());
+            loop {
+                if crate::mi_arena::alloc(a, crate::SLICE_SIZE, crate::SLICE_SIZE).is_null() {
+                    break;
+                }
+            }
+            assert!(crate::mi_arena::alloc(a, crate::SLICE_SIZE, crate::SLICE_SIZE).is_null());
         }
     }
 

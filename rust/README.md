@@ -241,7 +241,7 @@ Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features 
 
 ## Formal verification (Kani)
 
-`elymalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, free-list `encode_addr`/`decode_addr`, canary low-byte-zero vs the freed marker, a synthetic page `used + local_len` ghost, and the delayed-free quarantine ring. `vma-core` proves first-fit / coalesce on a fixed-size array twin of the free list (Kani + `BTreeMap` / `Vec` unwind is too heavy). Host `cargo test` covers the same properties with fixed inputs plus the seeded random suite in `chaos.rs`. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
+`elymalloc-core` proves layout/bin/padding integer math, a **mmap region table** and **TLS slot** model (`cfg(kani)` backends; production stays unix/`pthread`), **SIMD lane twins** (SSE2/NEON/AVX-512 nests ≡ `write_bytes` / copy / eq; no `core::arch` in Kani), and **real `Page` `init_local_free` / pop / push / `push_thread_free` / collect** (stack `Page`; 64 KiB `page::create` is out of CBMC range). Host tests cover `create` / padding / `destroy` on real mmap; Ghost-page accounting is the spec. `vma-core` proves first-fit / coalesce / `minAlignment` on a fixed-size array twin of the free list (not production `BTreeMap`). Host `cargo test` mirrors each proof with fixed inputs plus `chaos.rs`. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
 
 ```
 nix develop          # cargo-kani on PATH (no cargo install)
@@ -256,7 +256,7 @@ cargo install --locked kani-verifier
 cargo kani setup
 ```
 
-Proofs stay on pure integer helpers (`addr` / `with_exposed_provenance_mut` for encoded free-list next pointers). SIMD fill/compare/copy (`core::arch` SSE2/NEON/AVX-512) is `cfg(not(kani))` so the verifier does not have to model vector instructions.
+The Kani OS backend is a page-prot table over a static buffer (not the unix 4 MiB segment cache or kernel `mmap`). TLS is two sequential thread ids. SIMD proofs are the integer twins; host tests compare twins to `write_bytes` and to the real `core::arch` path. Encoded free-list next pointers still use `ptr::addr` / `with_exposed_provenance_mut`.
 
 ## Benchmarks
 

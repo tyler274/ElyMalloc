@@ -2428,3 +2428,48 @@ unsafe extern "system" fn tls_callback(_h: *mut c_void, reason: u32, _reserved: 
         mi_process_done();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::ptr;
+
+    #[test]
+    fn malloc_is_16_aligned() {
+        unsafe {
+            let p = malloc(1);
+            assert!(!p.is_null());
+            assert_eq!(p as usize % 16, 0);
+            free(p);
+        }
+    }
+
+    #[test]
+    fn free_null() {
+        unsafe {
+            free(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn calloc_zeros() {
+        unsafe {
+            let p = calloc(4, 16) as *mut u8;
+            assert!(!p.is_null());
+            for i in 0..64 {
+                assert_eq!(*p.add(i), 0);
+            }
+            free(p as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn usable_size_trailer() {
+        unsafe {
+            let p = malloc(24);
+            assert!(!p.is_null());
+            assert_eq!(malloc_usable_size(p), 24);
+            free(p);
+        }
+    }
+}

@@ -181,6 +181,16 @@ mod tests {
         f.free(b, 8);
         assert_eq!(f.free_bytes(), 64);
     }
+
+    #[test]
+    fn first_fit_respects_min_alignment() {
+        let mut f = VecFreeList::new(64);
+        let a = f.alloc_first_fit(8, 16).unwrap();
+        assert_eq!(a % 16, 0);
+        let b = f.alloc_first_fit(8, 8).unwrap();
+        assert_eq!(b % 8, 0);
+        assert!(f.disjoint());
+    }
 }
 
 #[cfg(kani)]
@@ -226,5 +236,18 @@ mod kani_proofs {
         f.free(b, 8);
         assert_eq!(f.free_bytes(), 32);
         assert!(f.disjoint());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn first_fit_respects_min_alignment() {
+        let mut f = VecFreeList::new(32);
+        let align: u64 = if kani::any() { 8 } else { 16 };
+        let size: u64 = kani::any();
+        kani::assume(size >= 1 && size <= 8);
+        if let Some(off) = f.alloc_first_fit(size, align) {
+            assert_eq!(off % align, 0);
+            assert!(f.disjoint());
+        }
     }
 }

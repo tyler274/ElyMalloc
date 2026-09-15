@@ -17,7 +17,7 @@ use crate::page_map;
 use crate::ptrx;
 use crate::quarantine;
 use crate::tls;
-use crate::{align_up, MAX_ALLOC, PADDING_SIZE, PTR_SIZE};
+use crate::{align_up, PTR_SIZE};
 use core::ffi::c_char;
 use core::ptr::{self, addr_of_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -94,7 +94,7 @@ pub unsafe fn malloc(size: usize) -> *mut u8 {
         }
     }
     crate::init();
-    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
+    if !crate::layout::max_alloc_ok(size) {
         os::enomem();
         return ptr::null_mut();
     }
@@ -308,7 +308,7 @@ pub unsafe fn malloc_aligned(size: usize, align: usize) -> *mut u8 {
         os::einval();
         return ptr::null_mut();
     }
-    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
+    if !crate::layout::max_alloc_ok(size) {
         os::enomem();
         return ptr::null_mut();
     }

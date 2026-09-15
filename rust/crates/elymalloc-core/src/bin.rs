@@ -9,13 +9,28 @@
 //! (C `MI_SMALL/MEDIUM/LARGE_MAX_OBJ_SIZE`). Above [`crate::LARGE_MAX_OBJ_SIZE`]
 //! the huge/singleton path is used.
 
+use crate::spin::SpinLock;
 use crate::{BIN_HUGE, LARGE_MAX_OBJ_SIZE, MAX_ALIGN_SIZE, PTR_SIZE};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const BIN_COUNT: usize = BIN_HUGE + 1;
 pub const LARGE_MAX_OBJ_WSIZE: usize = LARGE_MAX_OBJ_SIZE / PTR_SIZE;
 
-static mut BIN_SIZES: [usize; BIN_COUNT] = [0; BIN_COUNT];
-static mut BIN_INIT: bool = false;
+struct BinTable {
+    ready: AtomicBool,
+    lock: SpinLock,
+    sizes: UnsafeCell<[usize; BIN_COUNT]>,
+}
+
+// Safety: `sizes` is written once under `lock` before `ready`, then read-only.
+unsafe impl Sync for BinTable {}
+
+static BINS: BinTable = BinTable {
+    ready: AtomicBool::new(false),
+    lock: SpinLock::new(),
+    sizes: UnsafeCell::new([0; BIN_COUNT]),
+};
 
 /// Words needed for `size` (C `_mi_wsize_from_size`).
 #[inline]
@@ -57,37 +72,46 @@ pub fn bin_for_size(size: usize) -> usize {
     ((b << 2) + ((wsize >> (b - 2)) & 0x03)) - 3
 }
 
+fn build_bin_sizes() -> [usize; BIN_COUNT] {
+    let mut sizes = [0usize; BIN_COUNT];
+    let mut sz = 0usize;
+    while sz <= LARGE_MAX_OBJ_SIZE {
+        let bin = bin_for_size(sz);
+        if bin < BIN_HUGE {
+            sizes[bin] = sz;
+        }
+        sz += 1;
+    }
+    sizes[0] = 0;
+    if sizes[1] == 0 {
+        sizes[1] = PTR_SIZE;
+    }
+    sizes
+}
+
 /// Fill `BIN_SIZES` so `bin_size(b)` is the largest request that maps to `b`.
 pub fn init_bin_sizes() {
-    unsafe {
-        if BIN_INIT {
-            return;
-        }
-        let mut sz = 0usize;
-        while sz <= LARGE_MAX_OBJ_SIZE {
-            let bin = bin_for_size(sz);
-            if bin < BIN_HUGE {
-                BIN_SIZES[bin] = sz;
-            }
-            sz += 1;
-        }
-        BIN_SIZES[0] = 0;
-        if BIN_SIZES[1] == 0 {
-            BIN_SIZES[1] = PTR_SIZE;
-        }
-        BIN_INIT = true;
+    if BINS.ready.load(Ordering::Acquire) {
+        return;
     }
+    let _g = BINS.lock.lock();
+    if BINS.ready.load(Ordering::Relaxed) {
+        return;
+    }
+    unsafe {
+        *BINS.sizes.get() = build_bin_sizes();
+    }
+    BINS.ready.store(true, Ordering::Release);
 }
 
 /// Block size of `bin` (not including a further huge rounding).
 #[inline]
 pub fn bin_size(bin: usize) -> usize {
-    unsafe {
-        if bin >= BIN_HUGE {
-            LARGE_MAX_OBJ_SIZE
-        } else {
-            BIN_SIZES[bin]
-        }
+    if bin >= BIN_HUGE {
+        LARGE_MAX_OBJ_SIZE
+    } else {
+        init_bin_sizes();
+        unsafe { (*BINS.sizes.get())[bin] }
     }
 }
 

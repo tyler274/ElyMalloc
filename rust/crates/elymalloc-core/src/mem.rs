@@ -3,7 +3,9 @@
 //! Small sizes stay on SSE2 / NEON. Lengths of at least [`AVX512_MIN`] use
 //! AVX-512 (`AVX512F` + `AVX512BW`, 64-byte ZMM) when the CPU and OS enable it
 //! (Zen 5, Ice Lake+, and compile-time `target-cpu` with those features).
-//! Detection is cached CPUID + `XCR0`; Kani/wasm keep the scalar path.
+//! Detection is cached CPUID + `XCR0`. Under Kani, [`fill`] / [`copy`] /
+//! [`eq_filled`] are the integer **lane twins** (same loop nests, no
+//! `core::arch`); host tests compare twins to `write_bytes`.
 
 use core::ptr;
 
@@ -12,9 +14,18 @@ use core::ptr;
 const AVX512_MIN: usize = 64;
 
 /// Fill `p[0..n]` with `byte`. Used for debug fill, calloc, padding slack.
+///
+/// Under Kani this is the AVX-512 then SSE2 lane twin, not `core::arch`
+/// (Kani `fill_sse2_lanes_eq_write_bytes`, `fill_avx512_lanes_eq_write_bytes`).
 #[inline]
 pub unsafe fn fill(p: *mut u8, byte: u8, n: usize) {
     if p.is_null() || n == 0 {
+        return;
+    }
+    #[cfg(kani)]
+    {
+        let off = fill_avx512_lanes(p, byte, n);
+        fill_sse2_lanes(p.add(off), byte, n - off);
         return;
     }
     #[cfg(all(target_arch = "x86_64", not(kani)))]
@@ -22,6 +33,7 @@ pub unsafe fn fill(p: *mut u8, byte: u8, n: usize) {
     #[cfg(all(target_arch = "aarch64", not(kani)))]
     fill_neon(p, byte, n);
     #[cfg(not(any(
+        kani,
         all(target_arch = "x86_64", not(kani)),
         all(target_arch = "aarch64", not(kani))
     )))]
@@ -46,14 +58,23 @@ pub unsafe fn zero_user(p: *mut u8, n: usize) {
 }
 
 /// Non-overlapping copy (realloc).
+///
+/// x86 production copies AVX-512 chunks then [`ptr::copy_nonoverlapping`] for
+/// the tail (not SSE2). The Kani twin matches that nest.
 #[inline]
 pub unsafe fn copy(dst: *mut u8, src: *const u8, n: usize) {
     if n == 0 || dst.is_null() || src.is_null() {
         return;
     }
+    #[cfg(kani)]
+    {
+        let off = copy_avx512_lanes(dst, src, n);
+        ptr::copy_nonoverlapping(src.add(off), dst.add(off), n - off);
+        return;
+    }
     #[cfg(all(target_arch = "x86_64", not(kani)))]
     copy_x86(dst, src, n);
-    #[cfg(not(all(target_arch = "x86_64", not(kani))))]
+    #[cfg(not(any(kani, all(target_arch = "x86_64", not(kani)))))]
     ptr::copy_nonoverlapping(src, dst, n);
 }
 
@@ -66,6 +87,13 @@ pub unsafe fn eq_filled(p: *const u8, byte: u8, n: usize) -> bool {
     if p.is_null() {
         return false;
     }
+    #[cfg(kani)]
+    {
+        return match eq_filled_avx512_lanes(p, byte, n) {
+            Ok(off) => eq_filled_sse2_lanes(p.add(off), byte, n - off),
+            Err(()) => false,
+        };
+    }
     #[cfg(all(target_arch = "x86_64", not(kani)))]
     {
         return eq_filled_x86(p, byte, n);
@@ -75,6 +103,7 @@ pub unsafe fn eq_filled(p: *const u8, byte: u8, n: usize) -> bool {
         return eq_filled_neon(p, byte, n);
     }
     #[cfg(not(any(
+        kani,
         all(target_arch = "x86_64", not(kani)),
         all(target_arch = "aarch64", not(kani))
     )))]
@@ -309,9 +338,96 @@ unsafe fn eq_filled_neon(p: *const u8, byte: u8, n: usize) -> bool {
     true
 }
 
+/// SSE2 / NEON nest: 16-byte stride then byte tail. Always compiled for Kani + host compares.
+#[cfg_attr(not(any(test, kani)), allow(dead_code))]
+#[inline]
+pub(crate) unsafe fn fill_sse2_lanes(p: *mut u8, byte: u8, n: usize) {
+    let mut i = 0usize;
+    while i + 16 <= n {
+        ptr::write_bytes(p.add(i), byte, 16);
+        i += 16;
+    }
+    while i < n {
+        *p.add(i) = byte;
+        i += 1;
+    }
+}
+
+/// AVX-512 nest: 256-byte then 64-byte strides. Returns bytes stored.
+#[cfg_attr(not(any(test, kani)), allow(dead_code))]
+#[inline]
+pub(crate) unsafe fn fill_avx512_lanes(p: *mut u8, byte: u8, n: usize) -> usize {
+    let mut i = 0usize;
+    while i + 256 <= n {
+        ptr::write_bytes(p.add(i), byte, 256);
+        i += 256;
+    }
+    while i + 64 <= n {
+        ptr::write_bytes(p.add(i), byte, 64);
+        i += 64;
+    }
+    i
+}
+
+#[cfg_attr(not(any(test, kani)), allow(dead_code))]
+#[inline]
+pub(crate) unsafe fn copy_avx512_lanes(dst: *mut u8, src: *const u8, n: usize) -> usize {
+    let mut i = 0usize;
+    while i + 256 <= n {
+        ptr::copy_nonoverlapping(src.add(i), dst.add(i), 256);
+        i += 256;
+    }
+    while i + 64 <= n {
+        ptr::copy_nonoverlapping(src.add(i), dst.add(i), 64);
+        i += 64;
+    }
+    i
+}
+
+#[cfg_attr(not(any(test, kani)), allow(dead_code))]
+#[inline]
+pub(crate) unsafe fn eq_filled_sse2_lanes(p: *const u8, byte: u8, n: usize) -> bool {
+    let mut i = 0usize;
+    while i + 16 <= n {
+        let mut j = 0usize;
+        while j < 16 {
+            if *p.add(i + j) != byte {
+                return false;
+            }
+            j += 1;
+        }
+        i += 16;
+    }
+    while i < n {
+        if *p.add(i) != byte {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+#[cfg_attr(not(any(test, kani)), allow(dead_code))]
+#[inline]
+pub(crate) unsafe fn eq_filled_avx512_lanes(p: *const u8, byte: u8, n: usize) -> Result<usize, ()> {
+    let mut i = 0usize;
+    while i + 64 <= n {
+        let mut j = 0usize;
+        while j < 64 {
+            if *p.add(i + j) != byte {
+                return Err(());
+            }
+            j += 1;
+        }
+        i += 64;
+    }
+    Ok(i)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ptr;
 
     #[test]
     fn fill_and_eq() {
@@ -339,6 +455,19 @@ mod tests {
             assert!(eq_filled(b.as_ptr(), 0xCD, 257));
             assert_eq!(b[257], 0xAB);
         }
+        // Lane twins ≡ write_bytes; host SIMD `fill` matches the same oracle.
+        let mut twin = [0u8; 300];
+        let mut scalar = [0u8; 300];
+        let mut simd = [0u8; 300];
+        unsafe {
+            fill_sse2_lanes(twin.as_mut_ptr(), 0x5A, 300);
+            let off = fill_avx512_lanes(twin.as_mut_ptr(), 0x5A, 300);
+            fill_sse2_lanes(twin.as_mut_ptr().add(off), 0x5A, 300 - off);
+            ptr::write_bytes(scalar.as_mut_ptr(), 0x5A, 300);
+            fill(simd.as_mut_ptr(), 0x5A, 300);
+        }
+        assert_eq!(twin, scalar);
+        assert_eq!(simd, scalar);
     }
 
     #[test]

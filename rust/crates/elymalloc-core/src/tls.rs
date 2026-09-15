@@ -179,7 +179,7 @@ mod native {
         heap::abandon(h);
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(kani)))]
     pub fn register_atfork() {
         unsafe extern "C" fn atfork_prepare() {}
         unsafe extern "C" fn atfork_parent() {}
@@ -195,7 +195,7 @@ mod native {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(any(not(unix), kani))]
     pub fn register_atfork() {}
 }
 

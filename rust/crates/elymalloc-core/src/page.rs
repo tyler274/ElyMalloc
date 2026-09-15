@@ -36,6 +36,7 @@
 //! caller; [`pop_local`] does the same.
 
 use crate::arena::{self, Arena};
+use crate::layout;
 use crate::mem;
 use crate::os;
 use crate::page_map;
@@ -116,7 +117,10 @@ struct Padding {
 
 #[inline]
 fn fill_enabled() -> bool {
-    cfg!(any(debug_assertions, feature = "debug-fill"))
+    cfg!(all(
+        not(kani),
+        any(debug_assertions, feature = "debug-fill")
+    ))
 }
 
 /// C `MI_PADDING_CHECK_BYTES` (`MI_SECURE>=5` or debug): fill slack between the
@@ -218,6 +222,10 @@ unsafe fn encode_ptr(page: *const Page, p: *mut Block) -> usize {
 
 /// Decode `block.next` and abort if the pointer is outside this page.
 ///
+/// Provenance rebuild is [`ptrx::with_exposed`]; range checks are
+/// [`contains`] / [`is_block_start`] ([`layout`] integers, Kani
+/// `decode_then_range`). Corruption is [`os::efault`] (`page_corrupt_next_panics`).
+///
 /// # Safety
 /// `page` and `block` must be live; `block` belongs to `page`.
 #[inline]
@@ -277,21 +285,16 @@ unsafe fn unmap_page_memory(base: *mut u8, size: usize, from_arena: bool) {
 /// C `MI_PAGE_MIN_START_BLOCK_ALIGN` is 16; power-of-two sizes then stay
 /// naturally aligned up to 4 KiB (`MI_PAGE_MAX_START_BLOCK_ALIGN2`).
 fn block_align(block_size: usize) -> usize {
-    if block_size == 0 {
-        return 16;
-    }
-    let po2 = block_size & block_size.wrapping_neg();
-    po2.max(16)
+    layout::block_align(block_size)
 }
 
 /// `[lead guard][Page][mid guard][blocks…][end guard]` - C `MI_SECURE` / `MI_SECURE=FULL`.
 fn meta_prefix(block_align: usize) -> (usize, usize, usize) {
-    let os = os::page_size();
-    let lead = os;
-    let meta = align_up(core::mem::size_of::<Page>(), os);
-    let mid = os;
-    let area0 = lead + meta + mid;
-    (lead, meta, align_up(area0, block_align.max(1)))
+    layout::meta_prefix(
+        os::page_size(),
+        core::mem::size_of::<Page>(),
+        block_align,
+    )
 }
 
 #[inline]
@@ -336,7 +339,7 @@ fn shuffle_usize(x: usize) -> usize {
 }
 
 /// Randomized free list (C `mi_page_free_list_extend_secure`, `MI_SECURE>=2`).
-unsafe fn init_local_free(page: *mut Page, area: *mut u8, bsize: usize, capacity: usize) {
+pub(crate) unsafe fn init_local_free(page: *mut Page, area: *mut u8, bsize: usize, capacity: usize) {
     const MAX_SLICES: usize = 64;
     (*page).local_free = ptr::null_mut();
     if capacity == 0 || area.is_null() || bsize == 0 {
@@ -418,8 +421,7 @@ pub unsafe fn create(block_size: usize, map_size: usize, arena: *mut Arena) -> *
     let page = base.add(lead) as *mut Page;
     ptr::write_bytes(page as *mut u8, 0, core::mem::size_of::<Page>());
     let area = base.add(area_off);
-    let usable = map_size.saturating_sub(area_off).saturating_sub(tail);
-    let capacity = usable / block_size;
+    let capacity = layout::capacity(map_size, area_off, tail, block_size);
     if capacity == 0 {
         unmap_page_memory(base, map_size, from_arena);
         return ptr::null_mut();
@@ -672,53 +674,47 @@ pub unsafe fn push_thread_free(page: *mut Page, ptr: *mut u8) {
 }
 
 /// True if `ptr` lies in `[area, area + capacity * block_size)`.
+///
+/// Integer core: [`layout::in_range`] (Kani `in_range_block_start`).
 #[inline]
 pub unsafe fn contains(page: *mut Page, ptr: *const u8) -> bool {
     if page.is_null() || ptr.is_null() {
         return false;
     }
     let start = ptrx::addr((*page).area);
-    let end = start + ((*page).capacity as usize) * (*page).block_size;
-    let addr = ptrx::addr(ptr);
-    addr >= start && addr < end
+    let len = ((*page).capacity as usize).saturating_mul((*page).block_size);
+    layout::in_range(start, len, ptrx::addr(ptr))
 }
 
 /// Block start containing `p` (C `_mi_page_ptr_unalign`).
+///
+/// Integer core: [`layout::block_start`].
 #[inline]
 pub unsafe fn block_start_of(page: *mut Page, ptr: *const u8) -> *mut u8 {
-    if page.is_null() || ptr.is_null() || !contains(page, ptr) {
-        return ptr::null_mut();
-    }
-    let bs = (*page).block_size;
-    if bs == 0 {
+    if page.is_null() || ptr.is_null() {
         return ptr::null_mut();
     }
     let start = ptrx::addr((*page).area);
-    let addr = ptrx::addr(ptr);
-    if addr < start {
-        return ptr::null_mut();
+    let bs = (*page).block_size;
+    let len = ((*page).capacity as usize).saturating_mul(bs);
+    match layout::block_start(start, len, bs, ptrx::addr(ptr)) {
+        Some(a) => ptrx::with_exposed(a),
+        None => ptr::null_mut(),
     }
-    let diff = addr - start;
-    let adjust = if bs.is_power_of_two() {
-        diff & (bs - 1)
-    } else {
-        diff % bs
-    };
-    (addr - adjust) as *mut u8
 }
 
 /// True if `ptr` is the start of a block (offset from `area` is a multiple of `block_size`).
+///
+/// Integer core: [`layout::is_block_start`].
 #[inline]
 pub unsafe fn is_block_start(page: *mut Page, ptr: *const u8) -> bool {
-    if !contains(page, ptr) {
+    if page.is_null() || ptr.is_null() {
         return false;
     }
+    let start = ptrx::addr((*page).area);
     let bs = (*page).block_size;
-    if bs == 0 {
-        return false;
-    }
-    let off = ptrx::addr(ptr) - ptrx::addr((*page).area);
-    off % bs == 0
+    let len = ((*page).capacity as usize).saturating_mul(bs);
+    layout::is_block_start(start, len, bs, ptrx::addr(ptr))
 }
 
 /// `malloc(0)` still needs a non-zero block; C treats 0 as one word.

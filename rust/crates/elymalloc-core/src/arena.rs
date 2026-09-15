@@ -8,6 +8,7 @@
 //! Arenas are process-shared metadata; the bump is atomic. Slice alignment
 //! is required so the page map can key each 64 KiB.
 
+use crate::layout;
 use crate::os;
 use crate::spin::SpinLock;
 use crate::{align_up, SLICE_SIZE};
@@ -130,13 +131,10 @@ pub unsafe fn alloc(arena: *mut Arena, size: usize, align: usize) -> *mut u8 {
     let size = align_up(size, SLICE_SIZE.max(os::page_size()));
     loop {
         let pos = (*arena).bump.load(Ordering::Relaxed);
-        let aligned = align_up(pos, align);
-        let Some(new_pos) = aligned.checked_add(size) else {
+        let Some((aligned, new_pos)) = layout::arena_bump_next(pos, size, align, (*arena).size)
+        else {
             return ptr::null_mut();
         };
-        if new_pos > (*arena).size {
-            return ptr::null_mut();
-        }
         if (*arena)
             .bump
             .compare_exchange_weak(pos, new_pos, Ordering::AcqRel, Ordering::Relaxed)
@@ -159,8 +157,7 @@ pub fn contains(arena: *const Arena, p: *const u8) -> bool {
     }
     unsafe {
         let b = crate::ptrx::addr((*arena).base);
-        let addr = crate::ptrx::addr(p);
-        addr >= b && addr < b.wrapping_add((*arena).size)
+        layout::in_range(b, (*arena).size, crate::ptrx::addr(p))
     }
 }
 

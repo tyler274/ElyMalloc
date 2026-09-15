@@ -16,7 +16,7 @@ use crate::bin::{self, BIN_COUNT};
 use crate::page::{self, Page};
 use crate::spin::SpinLock;
 use crate::stats::AllocStats;
-use crate::{align_up, os, LARGE_MAX_OBJ_SIZE, MAX_ALLOC, PADDING_SIZE, SLICE_SIZE};
+use crate::{align_up, os, LARGE_MAX_OBJ_SIZE, SLICE_SIZE};
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
@@ -812,7 +812,7 @@ pub unsafe fn theap_malloc(th: *mut ThreadHeap, size: usize) -> *mut u8 {
         os::enomem();
         return ptr::null_mut();
     }
-    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
+    if !crate::layout::max_alloc_ok(size) {
         os::enomem();
         return ptr::null_mut();
     }
@@ -844,7 +844,7 @@ pub unsafe fn theap_malloc_aligned(th: *mut ThreadHeap, size: usize, align: usiz
         os::einval();
         return ptr::null_mut();
     }
-    if size > MAX_ALLOC.saturating_sub(PADDING_SIZE) {
+    if !crate::layout::max_alloc_ok(size) {
         os::enomem();
         return ptr::null_mut();
     }

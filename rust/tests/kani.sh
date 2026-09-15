@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Kani proofs for elymalloc-core and vma-core (integer models, no mmap/SIMD).
+# Kani proofs for elymalloc-core and vma-core (layout math, mmap/TLS models,
+# SIMD lane twins, Page mutation). Two `-p` jobs; no extra GHA workflows.
 # No-ops if cargo-kani is not on PATH (`nix develop` or `cargo kani setup`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

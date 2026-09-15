@@ -12,25 +12,39 @@
 //!
 //! Empty L1 so `free(NULL)` and pre-init frees are safe (C issue #1341).
 
+use crate::layout;
 use crate::os;
 use crate::page::Page;
 use crate::SLICE_SHIFT;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-const L2_BITS: usize = 13;
+/// Production widths are [`layout::PAGE_MAP_L2_BITS`] / `L1_BITS`. Kani uses a
+/// tiny table keyed by offset from the mmap backing base.
+#[cfg(kani)]
+const L2_BITS: usize = 4;
+#[cfg(not(kani))]
+const L2_BITS: usize = layout::PAGE_MAP_L2_BITS;
+#[cfg(kani)]
+const L1_BITS: usize = 4;
+#[cfg(not(kani))]
+const L1_BITS: usize = layout::PAGE_MAP_L1_BITS;
 const L2_SIZE: usize = 1 << L2_BITS;
-const L1_BITS: usize = 18;
 const L1_SIZE: usize = 1 << L1_BITS;
 
 static L1: AtomicPtr<AtomicPtr<u8>> = AtomicPtr::new(ptr::null_mut());
 
 #[inline]
 fn split(addr: usize) -> (usize, usize) {
-    let slice = addr >> SLICE_SHIFT;
-    let l2 = slice & (L2_SIZE - 1);
-    let l1 = slice >> L2_BITS;
-    (l1, l2)
+    #[cfg(kani)]
+    {
+        let rel = addr.wrapping_sub(os::backing_base());
+        layout::page_map_split(rel, SLICE_SHIFT, L2_BITS)
+    }
+    #[cfg(not(kani))]
+    {
+        layout::page_map_split(addr, SLICE_SHIFT, L2_BITS)
+    }
 }
 
 fn l1_table() -> *mut AtomicPtr<u8> {

@@ -125,6 +125,7 @@ jobs:
   kani:
     name: Kani proofs
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: elymalloc-core

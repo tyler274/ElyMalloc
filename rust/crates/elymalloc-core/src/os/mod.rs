@@ -73,6 +73,11 @@ pub fn efault() -> ! {
 
 /// Owned anonymous mapping. `Drop` unmaps unless [`Mapping::leak`] hands the
 /// region to the page map / a page.
+///
+/// Under `cfg(kani)` the backend is a region table over a static buffer
+/// (not kernel `mmap`); production is `mmap` / `VirtualAlloc` / `memory.grow`.
+/// Proved: `mmap_anon_aligned_and_size`, `mapping_leak_stays_mapped`,
+/// `munmap_then_remap_reuses`, `protect_none_then_unprotect`.
 pub struct Mapping {
     ptr: NonNull<u8>,
     len: usize,
@@ -177,32 +182,37 @@ pub fn min_purge_size() -> usize {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(kani)))]
 mod linux;
-#[cfg(unix)]
+#[cfg(all(unix, not(kani)))]
 mod unix;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(kani)))]
 pub use linux::*;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(kani)))]
 mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(kani)))]
 pub use macos::*;
 
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+#[cfg(all(unix, not(kani), not(any(target_os = "linux", target_os = "macos"))))]
 pub use unix::*;
 
-#[cfg(windows)]
+#[cfg(all(windows, not(kani)))]
 mod windows;
-#[cfg(windows)]
+#[cfg(all(windows, not(kani)))]
 pub use windows::*;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(kani)))]
 mod wasm;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(kani)))]
 pub use wasm::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(kani)]
+mod kani;
+#[cfg(kani)]
+pub use kani::*;
+
+#[cfg(all(not(target_arch = "wasm32"), not(kani)))]
 mod tls_slot;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(kani)))]
 pub use tls_slot::TlsSlot;

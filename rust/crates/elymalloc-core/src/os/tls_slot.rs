@@ -9,6 +9,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 const UNSET: usize = usize::MAX;
 
 /// Process-wide TLS key. `T` is stored as a raw pointer (theap / subproc).
+///
+/// Production is `pthread_key_create` / `TlsAlloc`. Under `cfg(kani)` this is
+/// a two-thread key table; `get`/`set` are per model tid (Kani
+/// `tls_set_get_same_thread`, `tls_isolated_across_switch`,
+/// `tls_thread_exit_clears`).
 pub struct TlsSlot {
     key: AtomicUsize,
 }
