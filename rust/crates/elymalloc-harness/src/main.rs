@@ -50,6 +50,10 @@ enum Cmd {
     Vma,
     /// Firefox / Chromium / Electron vs C mimalloc (startup, child maps, page smoke)
     Browsers,
+    /// LLVM PGO: instrument, train, merge, rebuild with profile-use
+    Pgo,
+    /// Run PGO training workloads (caller sets LLVM_PROFILE_FILE)
+    PgoTrain(elymalloc_harness::pgo::TrainArgs),
 }
 
 fn main() {
@@ -78,6 +82,8 @@ fn main() {
             }
         }
         Cmd::Browsers => elymalloc_harness::browsers::run(),
+        Cmd::Pgo => elymalloc_harness::pgo::pgo(),
+        Cmd::PgoTrain(args) => elymalloc_harness::pgo::train(args),
     };
     if let Err(e) = r {
         eprintln!("{e:#}");

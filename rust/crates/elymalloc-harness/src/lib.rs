@@ -20,6 +20,7 @@
 //! | [`fuzz`] | `fuzz` (property + chaos; longer than `cargo test`) |
 //! | [`vma`] | `vma` (AMD VMA 3.4) |
 //! | [`browsers`] | `browsers` |
+//! | [`pgo`] | `pgo` / `pgo-train` |
 
 pub mod bench;
 pub mod browsers;
@@ -34,6 +35,7 @@ pub mod leptos;
 pub mod linkers;
 pub mod normalize;
 pub mod oracle;
+pub mod pgo;
 pub mod preload;
 pub mod process;
 pub mod projects;

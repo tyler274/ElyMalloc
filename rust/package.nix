@@ -7,6 +7,7 @@
   rustPlatform,
   stdenv,
   binutils,
+  llvmPackages,
   # NixOS `mimalloc.override { secureBuild = true; }` (C package). Mitigations
   # are always on here; the flag is accepted so overlays that used C mimalloc's
   # flag keep evaluating when pointed at this package.
@@ -15,6 +16,8 @@
   # rather than rebuilding rustc against musl.
   cargoTarget ? null,
   targetCc ? stdenv.cc,
+  # Instrumented build + train + profile-use. Off for musl/cross (no execute).
+  enablePgo ? true,
 }:
 
 let
@@ -24,6 +27,10 @@ let
   cargoEnvTarget = lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] target);
   ccBin = "${targetCc}/bin/${targetCc.targetPrefix}cc";
   cxxBin = "${targetCc}/bin/${targetCc.targetPrefix}c++";
+  nativePgo =
+    enablePgo && !isMusl && stdenv.buildPlatform.canExecute stdenv.hostPlatform;
+  baseRustflags = lib.optionalString isMusl "-C target-feature=-crt-static";
+  pgoUseFlag = "-Cprofile-use=$NIX_BUILD_TOP/elymalloc.profdata";
 in
 # Nixpkgs package name: `pkgs.elymalloc` (by-name/el/elymalloc).
 # Installed libs keep the C mimalloc ABI (`libmimalloc.so.3`, `mi_*`).
@@ -49,6 +56,8 @@ rustPlatform.buildRustPackage {
   # cargo-auditable would pull a second rustc (and LLVM) on musl.
   auditable = false;
 
+  nativeBuildInputs = lib.optionals nativePgo [ llvmPackages.llvm ];
+
   # rustPlatform's cargoBuildHook is baked to the host gnu target; drive
   # musl ourselves so we do not rebuild rustc.
   preBuild = lib.optionalString (cargoTarget != null) ''
@@ -56,6 +65,50 @@ rustPlatform.buildRustPackage {
   '';
   buildPhase = ''
     runHook preBuild
+    export CARGO_INCREMENTAL=0
+    ${lib.optionalString nativePgo ''
+    echo "elymalloc: PGO generate"
+    mkdir -p "$NIX_BUILD_TOP/pgo-raw"
+    export RUSTFLAGS="${baseRustflags}${lib.optionalString (baseRustflags != "") " "}-Cprofile-generate=$NIX_BUILD_TOP/pgo-raw"
+    cargo build --offline --release ${targetFlag} --target-dir "$NIX_BUILD_TOP/pgo-gen" -p elymalloc-c
+    cargo build --offline --release ${targetFlag} --target-dir "$NIX_BUILD_TOP/pgo-gen-secure" -p elymalloc-c --features secure
+    cargo build --offline --release ${targetFlag} --target-dir "$NIX_BUILD_TOP/pgo-gen" -p elymalloc-bench
+    cargo build --offline --release ${targetFlag} --target-dir "$NIX_BUILD_TOP/pgo-gen" -p elymalloc-alloc-stress
+
+    pgo_so="$NIX_BUILD_TOP/pgo-gen/${target}/release/libmimalloc.so"
+    pgo_secure="$NIX_BUILD_TOP/pgo-gen-secure/${target}/release/libmimalloc.so"
+    pgo_bench="$NIX_BUILD_TOP/pgo-gen/${target}/release/elymalloc-bench"
+    pgo_stress="$NIX_BUILD_TOP/pgo-gen/${target}/release/elymalloc-alloc-stress"
+    if [ ! -f "$pgo_so" ]; then
+      pgo_so="$NIX_BUILD_TOP/pgo-gen/release/libmimalloc.so"
+      pgo_secure="$NIX_BUILD_TOP/pgo-gen-secure/release/libmimalloc.so"
+      pgo_bench="$NIX_BUILD_TOP/pgo-gen/release/elymalloc-bench"
+      pgo_stress="$NIX_BUILD_TOP/pgo-gen/release/elymalloc-alloc-stress"
+    fi
+    export LLVM_PROFILE_FILE="$NIX_BUILD_TOP/pgo-raw/elymalloc-%p-%m.profraw"
+    echo "elymalloc: PGO train"
+    unset RUSTFLAGS
+    cargo run --offline --release ${targetFlag} -p elymalloc-harness -- pgo-train \
+      --so "$pgo_so" \
+      --secure-so "$pgo_secure" \
+      --bench "$pgo_bench" \
+      --stress "$pgo_stress" \
+      --cc ${lib.escapeShellArg ccBin} \
+      --include ${../include} \
+      --c-tests ${./tests} \
+      --tmp "$NIX_BUILD_TOP/pgo-train"
+    unset LLVM_PROFILE_FILE
+    shopt -s nullglob
+    pgo_raws=("$NIX_BUILD_TOP"/pgo-raw/*.profraw)
+    if [ ''${#pgo_raws[@]} -eq 0 ]; then
+      echo "elymalloc: PGO produced no .profraw" >&2
+      exit 1
+    fi
+    echo "elymalloc: PGO merge ''${#pgo_raws[@]} profiles"
+    llvm-profdata merge -sparse -o "$NIX_BUILD_TOP/elymalloc.profdata" "''${pgo_raws[@]}"
+    export RUSTFLAGS="${baseRustflags}${lib.optionalString (baseRustflags != "") " "}${pgoUseFlag}"
+    echo "elymalloc: PGO use"
+    ''}
     cargo build --offline --release ${targetFlag} -p elymalloc-c
     cargo build --offline --release ${targetFlag} -p elymalloc-c --features secure --target-dir target/mimalloc-secure
     cargo build --offline --release ${targetFlag} -p elymalloc-bench
@@ -65,7 +118,7 @@ rustPlatform.buildRustPackage {
   # Musl defaults to fully static binaries, which drop `cdylib`. NixOS
   # `memoryAllocator` and LD_PRELOAD need the shared object, so keep it.
   env = {
-    RUSTFLAGS = lib.optionalString isMusl "-C target-feature=-crt-static";
+    RUSTFLAGS = baseRustflags;
   }
   // lib.optionalAttrs isMusl {
     "CARGO_TARGET_${cargoEnvTarget}_LINKER" = ccBin;
@@ -78,6 +131,11 @@ rustPlatform.buildRustPackage {
   ];
 
   doCheck = true;
+  preCheck = lib.optionalString nativePgo ''
+    if [ -f "$NIX_BUILD_TOP/elymalloc.profdata" ]; then
+      export RUSTFLAGS="${baseRustflags}${lib.optionalString (baseRustflags != "") " "}${pgoUseFlag}"
+    fi
+  '';
   checkPhase = ''
     runHook preCheck
     # Core tests share the process heap; parallel rustc threads flake

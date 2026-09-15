@@ -10,7 +10,7 @@ Crate rustdocs (`//!` / `///`) are the per-module source of truth. This README i
 |-------|------|
 | `elymalloc-core` | `no_std` allocator (pages, heaps, arenas). Always-on `MI_SECURE` mitigations. `GlobalAlloc` via `ElyMalloc`. |
 | `elymalloc-c` | `cdylib`/`staticlib`: libc + `mi_*`, SONAME `libmimalloc.so.3` or `libmimalloc-secure.so.3`. |
-| `elymalloc-harness` | Oracle, world, browsers, Bun/Serde, Leptos WASM, VMA, wasm. Logic is unit-tested in the lib. |
+| `elymalloc-harness` | Oracle, world, browsers, Bun/Serde, Leptos WASM, VMA, wasm, PGO train/use. Logic is unit-tested in the lib. |
 | `vma-core` / `vma-c` | AMD VMA 3.4 C ABI (`libVulkanMemoryAllocator.so.3`). |
 | `elymalloc-wasm-smoke` / `elymalloc-leptos-smoke` / `elymalloc-alloc-stress` / `elymalloc-bench` | GlobalAlloc smokes and benches. |
 
@@ -22,6 +22,17 @@ cargo build --release -p elymalloc-c
 ```
 
 This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `cargo build --release -p elymalloc-c --features secure` produces the same mitigations with SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). The harness copies that to `target/release/libmimalloc-secure.so`.
+
+### Profile-guided optimization
+
+The native glibc Nix package (`nix build .#elymalloc`) trains LLVM PGO by default (`enablePgo`; musl/cross stay off). Locally:
+
+```
+cd rust
+cargo run --release -p elymalloc-harness -- pgo
+```
+
+Needs `llvm-profdata` on `PATH` or in rustc's sysroot (`rustup component add llvm-tools-preview`). Training runs `elymalloc-bench`, `elymalloc-alloc-stress`, and `tests/{smoke,bench,chaos}.c` under `LD_PRELOAD` of the instrumented `libmimalloc.so` (and the secure SONAME). `pgo` sets `LLVM_PROFILE_FILE`; `pgo-train` assumes the caller already set it.
 
 `cargo check` is clean for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-{gnu,musl}`, `riscv64gc-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, and `wasm32-unknown-unknown`. GitHub Actions workflow `rewrite.yaml` runs those (qemu-user for aarch64/riscv64). Musl cannot emit a `cdylib` unless `-C target-feature=-crt-static` is set (see `.cargo/config.toml`); `c_char` is `u8` on ARM/RISC-V, so path buffers use `libc::c_char` rather than `i8`.
 

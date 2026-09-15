@@ -133,7 +133,24 @@ pub fn cargo_in_root() -> Command {
 }
 
 pub fn cargo_ok(args: &[&str]) -> Result<()> {
-    let st = cargo_in_root().args(args).status()?;
+    cargo_ok_env(args, &[], &[])
+}
+
+/// Like [`cargo_ok`], with extra env and env-removes (PGO generate vs driver).
+pub fn cargo_ok_env(
+    args: &[&str],
+    extra_env: &[(&str, OsString)],
+    remove_env: &[&str],
+) -> Result<()> {
+    let mut cmd = cargo_in_root();
+    cmd.args(args);
+    for k in remove_env {
+        cmd.env_remove(k);
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let st = cmd.status()?;
     if !st.success() {
         bail!("cargo {args:?} failed");
     }
