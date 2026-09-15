@@ -1,6 +1,6 @@
-# Rust mimalloc rewrite
+# ElyMalloc
 
-Pure-Rust allocator with a C ABI intended as a drop-in replacement for C mimalloc **v3.5.2**, plus a pure-Rust AMD VMA **3.4** drop-in.
+Pure-Rust allocator (ElyMalloc) with a C ABI drop-in for C mimalloc **v3.5.2** (`libmimalloc.so.3`, `mi_*`), plus a pure-Rust AMD VMA **3.4** drop-in.
 
 Crate rustdocs (`//!` / `///`) are the per-module source of truth. This README is the operator map (build, NixOS, harness).
 
@@ -8,20 +8,20 @@ Crate rustdocs (`//!` / `///`) are the per-module source of truth. This README i
 
 | Crate | Role |
 |-------|------|
-| `mimalloc-core` | `no_std` allocator (pages, heaps, arenas). Always-on `MI_SECURE` mitigations. `GlobalAlloc` via `Mimalloc`. |
-| `mimalloc-c` | `cdylib`/`staticlib`: libc + `mi_*`, SONAME `libmimalloc.so.3` or `libmimalloc-secure.so.3`. |
-| `mimalloc-harness` | Oracle, world, browsers, Bun/Serde, Leptos WASM, VMA, wasm. Logic is unit-tested in the lib. |
+| `elymalloc-core` | `no_std` allocator (pages, heaps, arenas). Always-on `MI_SECURE` mitigations. `GlobalAlloc` via `ElyMalloc`. |
+| `elymalloc-c` | `cdylib`/`staticlib`: libc + `mi_*`, SONAME `libmimalloc.so.3` or `libmimalloc-secure.so.3`. |
+| `elymalloc-harness` | Oracle, world, browsers, Bun/Serde, Leptos WASM, VMA, wasm. Logic is unit-tested in the lib. |
 | `vma-core` / `vma-c` | AMD VMA 3.4 C ABI (`libVulkanMemoryAllocator.so.3`). |
-| `mimalloc-wasm-smoke` / `mimalloc-leptos-smoke` / `mimalloc-alloc-stress` / `mimalloc-bench` | GlobalAlloc smokes and benches. |
+| `elymalloc-wasm-smoke` / `elymalloc-leptos-smoke` / `elymalloc-alloc-stress` / `elymalloc-bench` | GlobalAlloc smokes and benches. |
 
 ## Build
 
 ```
 cd rust
-cargo build --release -p mimalloc-c
+cargo build --release -p elymalloc-c
 ```
 
-This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `cargo build --release -p mimalloc-c --features secure` produces the same mitigations with SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). The harness copies that to `target/release/libmimalloc-secure.so`.
+This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `cargo build --release -p elymalloc-c --features secure` produces the same mitigations with SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). The harness copies that to `target/release/libmimalloc-secure.so`.
 
 `cargo check` is clean for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-{gnu,musl}`, `riscv64gc-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, and `wasm32-unknown-unknown`. GitHub Actions workflow `rewrite.yaml` runs those (qemu-user for aarch64/riscv64). Musl cannot emit a `cdylib` unless `-C target-feature=-crt-static` is set (see `.cargo/config.toml`); `c_char` is `u8` on ARM/RISC-V, so path buffers use `libc::c_char` rather than `i8`.
 
@@ -30,12 +30,12 @@ This produces `target/release/libmimalloc.so` with SONAME `libmimalloc.so.3`. `c
 ```
 cd rust
 ./tests/run.sh
-# or: cargo test -p mimalloc-harness && cargo run -p mimalloc-harness -- run
+# or: cargo test -p elymalloc-harness && cargo run -p elymalloc-harness -- run
 ./tests/fuzz.sh                   # longer property + heap fuzzer + chaos
-# or: cargo run -p mimalloc-harness -- fuzz --steps 65536 --seed 1
+# or: cargo run -p elymalloc-harness -- fuzz --steps 65536 --seed 1
 ```
 
-`cargo test -p mimalloc-core` already runs seeded property tests (alignment, size-class bins, encoded free-list round-trips, padding canaries, quarantine ring), a sequential heap fuzzer (live-set overlap, `usable_size`, realloc prefix, calloc zeros), and a chaos monkey (threads, cross-thread `free`, `fork`). Default step counts fit CI and qemu; `MIMALLOC_CHAOS_STEPS` / `MIMALLOC_CHAOS_SEED` raise the budget. `MIMALLOC_QEMU=1` skips threads and fork. `c-abi` also compiles `tests/chaos.c` under preload.
+`cargo test -p elymalloc-core` already runs seeded property tests (alignment, size-class bins, encoded free-list round-trips, padding canaries, quarantine ring), a sequential heap fuzzer (live-set overlap, `usable_size`, realloc prefix, calloc zeros), and a chaos monkey (threads, cross-thread `free`, `fork`). Default step counts fit CI and qemu; `MIMALLOC_CHAOS_STEPS` / `MIMALLOC_CHAOS_SEED` raise the budget. `MIMALLOC_QEMU=1` skips threads and fork. `c-abi` also compiles `tests/chaos.c` under preload.
 
 Replay GitHub Rewrite jobs in Docker before push:
 
@@ -45,7 +45,7 @@ CROSS=1 ./tests/ci-docker.sh      # plus aarch64/riscv64 qemu smokes
 ./tests/ci-docker-osx.sh          # Darwin via sickcodes/Docker-OSX (needs /dev/kvm)
 ```
 
-`ci-docker-osx.sh` boots [Docker-OSX](https://github.com/sickcodes/Docker-OSX) headless (SSH `user`/`alpine` on `127.0.0.1:50922`) and runs the same `cargo test` / `mimalloc-c` / `c-abi` steps as the macOS Actions job. That VM is **Intel macOS**, not `macos-14` arm64: it still hits Darwin malloc-zone `fork`, host `EAGAIN` (35), and `PROT_NONE` → `SIGBUS`. It does **not** emulate 16 KiB pages or 128 KiB slices. Hub no longer carries `sickcodes/docker-osx:auto`; the script defaults to `dickhub/docker-osx:auto`. First boot copies the disk between layers and can take 15+ minutes to SSH. `PULL=1` forces a pull; `STOP=1` stops the VM afterwards; `FORCE=1` recreates a stale container.
+`ci-docker-osx.sh` boots [Docker-OSX](https://github.com/sickcodes/Docker-OSX) headless (SSH `user`/`alpine` on `127.0.0.1:50922`) and runs the same `cargo test` / `elymalloc-c` / `c-abi` steps as the macOS Actions job. That VM is **Intel macOS**, not `macos-14` arm64: it still hits Darwin malloc-zone `fork`, host `EAGAIN` (35), and `PROT_NONE` → `SIGBUS`. It does **not** emulate 16 KiB pages or 128 KiB slices. Hub no longer carries `sickcodes/docker-osx:auto`; the script defaults to `dickhub/docker-osx:auto`. First boot copies the disk between layers and can take 15+ minutes to SSH. `PULL=1` forces a pull; `STOP=1` stops the VM afterwards; `FORCE=1` recreates a stale container.
 
 Nix orchestrates the same suite (glibc and musl) as flake checks. Musl uses `rust-overlay` for `rust-std` so we do not rebuild rustc against musl:
 
@@ -69,38 +69,38 @@ Compiler suites vs C mimalloc and stock jemalloc (needs `cmake`; `wasmtime` is n
 ./tests/oracle-suites.sh
 # rustc UI only, still under Rust / C mimalloc / jemalloc:
 SUITES=rustc ./tests/oracle-suites.sh
-# same as: cargo run -p mimalloc-harness -- oracle
+# same as: cargo run -p elymalloc-harness -- oracle
 ```
 
-This builds C mimalloc with `MI_SECURE=FULL`, locates stock `libjemalloc.so` (`JEMALLOC_SO` or nixpkgs), runs the C ABI and C++ tests against the mimalloc libraries, then compiles GCC / Clang / rustc suite programs **once with the system toolchain** and runs those same binaries under `LD_PRELOAD` of each allocator. A test PASSes only if stdout, stderr, and exit code match a run of the same binary on the system malloc. FAIL sets must not grow vs C mimalloc or jemalloc. `./tests/compiler-preload.sh` is the Rust-only slice. Jemalloc skips GCC/Clang C torture unless `JEMALLOC_FULL=1`. The oracle also links a `#[global_allocator]` stress binary with GNU ld (bfd), gold, LLVM LLD, mold, and Wild, and compiles rustc/gcc under `LD_PRELOAD` of each allocator for those linkers (`./tests/linkers.sh` / `cargo run -p mimalloc-harness -- linkers`). Nixpkgs mold is dynamically linked to C `libmimalloc-secure`; the flake overlay rebuilds mold with this rewrite **statically** linked (`nix build .#mold`). That mold has no `DT_NEEDED` mimalloc; `mi_malloc` is in the binary. `LD_PRELOAD` of another mimalloc onto it is skipped (two copies of the allocator in one process).
+This builds C mimalloc with `MI_SECURE=FULL`, locates stock `libjemalloc.so` (`JEMALLOC_SO` or nixpkgs), runs the C ABI and C++ tests against the mimalloc libraries, then compiles GCC / Clang / rustc suite programs **once with the system toolchain** and runs those same binaries under `LD_PRELOAD` of each allocator. A test PASSes only if stdout, stderr, and exit code match a run of the same binary on the system malloc. FAIL sets must not grow vs C mimalloc or jemalloc. `./tests/compiler-preload.sh` is the Rust-only slice. Jemalloc skips GCC/Clang C torture unless `JEMALLOC_FULL=1`. The oracle also links a `#[global_allocator]` stress binary with GNU ld (bfd), gold, LLVM LLD, mold, and Wild, and compiles rustc/gcc under `LD_PRELOAD` of each allocator for those linkers (`./tests/linkers.sh` / `cargo run -p elymalloc-harness -- linkers`). Nixpkgs mold is dynamically linked to C `libmimalloc-secure`; the flake overlay rebuilds mold with this rewrite **statically** linked (`nix build .#mold`). That mold has no `DT_NEEDED` mimalloc; `mi_malloc` is in the binary. `LD_PRELOAD` of another mimalloc onto it is skipped (two copies of the allocator in one process).
 
 ## WASM
 
-`mimalloc-core` targets `wasm32-unknown-unknown` and `wasm32-wasip1` with **no libc, C toolchain, or emscripten**. The OS layer grows linear memory (`memory.grow`); `munmap` cannot shrink it. Threads and `mprotect` guards are no-ops (single process heap).
+`elymalloc-core` targets `wasm32-unknown-unknown` and `wasm32-wasip1` with **no libc, C toolchain, or emscripten**. The OS layer grows linear memory (`memory.grow`); `munmap` cannot shrink it. Threads and `mprotect` guards are no-ops (single process heap).
 
 ```
 rustup target add wasm32-unknown-unknown wasm32-wasip1
-# also: cargo check -p mimalloc-core --target wasm32-unknown-unknown
+# also: cargo check -p elymalloc-core --target wasm32-unknown-unknown
 ./tests/wasm-smoke.sh
 ```
 
-`wasm-smoke.sh` (or `cargo run -p mimalloc-harness -- wasm-smoke`) builds a `#[global_allocator]` program for both wasm targets, asserts the module does not import libc `malloc`, runs `smoke` and `stress` (sizes, realloc, calloc, aligned, churn, OOM; sequential only) under `wasmtime`, and runs `mimalloc-core` unit tests on `wasm32-wasip1`.
+`wasm-smoke.sh` (or `cargo run -p elymalloc-harness -- wasm-smoke`) builds a `#[global_allocator]` program for both wasm targets, asserts the module does not import libc `malloc`, runs `smoke` and `stress` (sizes, realloc, calloc, aligned, churn, OOM; sequential only) under `wasmtime`, and runs `elymalloc-core` unit tests on `wasm32-wasip1`.
 
 ```rust
-use mimalloc_core::Mimalloc;
+use elymalloc_core::ElyMalloc;
 
 #[global_allocator]
-static ALLOC: Mimalloc = Mimalloc;
+static ALLOC: ElyMalloc = ElyMalloc;
 ```
 
 ### Leptos WASM suites
 
-[Leptos](https://github.com/leptos-rs/leptos) (`leptos` 0.8) is a Rust web framework whose reactive runtime (`reactive_graph`, plus `oco` / `either_of` / `hydration_context` / …) is a real WASM allocator workout: thousands of small heap objects, nested owners, memos, and string churn. The harness clones upstream, injects `mimalloc_core::Mimalloc` as `#[global_allocator]` into those crates, and **runs** `cargo test --lib --target wasm32-wasip1` under wasmtime. Compile/link success is not enough. In-tree `mimalloc-leptos-smoke` is the same `reactive_graph` path without a network fetch. `leptos` CSR is `cargo check --target wasm32-unknown-unknown` (DOM tests need a browser; WASI already executed).
+[Leptos](https://github.com/leptos-rs/leptos) (`leptos` 0.8) is a Rust web framework whose reactive runtime (`reactive_graph`, plus `oco` / `either_of` / `hydration_context` / …) is a real WASM allocator workout: thousands of small heap objects, nested owners, memos, and string churn. The harness clones upstream, injects `elymalloc_core::ElyMalloc` as `#[global_allocator]` into those crates, and **runs** `cargo test --lib --target wasm32-wasip1` under wasmtime. Compile/link success is not enough. In-tree `elymalloc-leptos-smoke` is the same `reactive_graph` path without a network fetch. `leptos` CSR is `cargo check --target wasm32-unknown-unknown` (DOM tests need a browser; WASI already executed).
 
 ```
 cd rust
 ./tests/leptos.sh
-# or: cargo run -p mimalloc-harness -- leptos
+# or: cargo run -p elymalloc-harness -- leptos
 # LEPTOS_SRC=/path/to/leptos  LEPTOS_REFRESH=1
 ```
 
@@ -117,7 +117,7 @@ cd rust
 cargo test -p vma-core
 cargo build --release -p vma-c
 ./tests/vma-abi.sh
-# or: cargo run -p mimalloc-harness -- vma
+# or: cargo run -p elymalloc-harness -- vma
 nix build .#vma
 ```
 
@@ -128,7 +128,7 @@ The flake overlay replaces `pkgs.mimalloc` with this library. Mitigations are al
 ```nix
 {
   # `path:` copies gitignored rust/target (~4GiB) into the store; use git+file or github.
-  inputs.mimalloc-rs.url = "git+file:///home/luluco/code/mimalloc";
+  inputs.mimalloc-rs.url = "github:tyler274/ElyMalloc";
   # and in nixos configuration:
   nixpkgs.overlays = [ mimalloc-rs.overlays.default ];
   environment.memoryAllocator.provider = "mimalloc";
@@ -146,7 +146,7 @@ Packages from this machine (`NIXOS_CONFIG`, default `/etc/nixos`) are **run** as
 nix build .#world-preload
 nix build .#checks.x86_64-linux.world-preload
 # PATH programs from this NixOS config:
-cd rust && cargo run -p mimalloc-harness -- world
+cd rust && cargo run -p elymalloc-harness -- world
 ./tests/nixos-world.sh
 ```
 
@@ -162,7 +162,7 @@ Firefox / Chromium / Electron are **run** as allocator smokes (startup, child `/
 cd rust
 # set ELECTRON / CHROMIUM if those binaries are not on PATH
 ./tests/browsers.sh
-# or: cargo run -p mimalloc-harness -- browsers
+# or: cargo run -p elymalloc-harness -- browsers
 # optional nixpkgs browsers (large): NIX_BROWSERS=1 ./tests/browsers.sh
 nix build .#browsers-preload
 ```
@@ -179,7 +179,7 @@ cd rust
 # bun writes scratch under `/tmp/mimalloc-projects` (not `rust/target`) so a
 # dirty Nix `path:` flake does not NAR-hash FIFOs / long paths
 ./tests/projects.sh
-# or: cargo run -p mimalloc-harness -- projects
+# or: cargo run -p elymalloc-harness -- projects
 # PROJECTS=bun|serde|all  BUN_FULL=1  BUN_TEST='test/js/web/encoding'  BUN_SRC=  SERDE_SRC=
 ```
 
@@ -190,7 +190,7 @@ cd rust
 ```
 cd rust
 ./tests/python.sh
-# or: cargo run -p mimalloc-harness -- python
+# or: cargo run -p elymalloc-harness -- python
 # PYTHON3=  CPYTHON_SRC=  CPYTHON_REFRESH=1  CPYTHON_FULL=1  CPYTHON_TEST='test_list test_dict'
 ```
 
@@ -214,16 +214,16 @@ Release builds can enable C-style debug fill (`0xD0` / `0xDF`) with `--features 
 
 ## LD_PRELOAD compiler stress
 
-`tests/compiler-preload.sh` (Rust crate `mimalloc-harness`) compiles GCC, Clang, and rustc suite programs with the system toolchain, then runs the **same binaries** with `LD_PRELOAD`. PASS means stdout, stderr, and exit status match the system malloc - compile success is not enough. Cases that already fail with the system malloc are skipped so only allocator regressions count. `tests/oracle-suites.sh` repeats the runs under C mimalloc (`MI_SECURE=FULL`) and stock jemalloc (same binaries) and requires the Rust FAIL set to be a subset of both. Harness filters and output comparison are unit-tested (`cargo test -p mimalloc-harness`).
+`tests/compiler-preload.sh` (Rust crate `elymalloc-harness`) compiles GCC, Clang, and rustc suite programs with the system toolchain, then runs the **same binaries** with `LD_PRELOAD`. PASS means stdout, stderr, and exit status match the system malloc - compile success is not enough. Cases that already fail with the system malloc are skipped so only allocator regressions count. `tests/oracle-suites.sh` repeats the runs under C mimalloc (`MI_SECURE=FULL`) and stock jemalloc (same binaries) and requires the Rust FAIL set to be a subset of both. Harness filters and output comparison are unit-tested (`cargo test -p elymalloc-harness`).
 
 ## Formal verification (Kani)
 
-`mimalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, free-list `encode_addr`/`decode_addr`, canary low-byte-zero vs the freed marker, a synthetic page `used + local_len` ghost, and the delayed-free quarantine ring. `vma-core` proves first-fit / coalesce on a fixed-size array twin of the free list (Kani + `BTreeMap` / `Vec` unwind is too heavy). Host `cargo test` covers the same properties with fixed inputs plus the seeded random suite in `chaos.rs`. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
+`elymalloc-core` has `#[cfg(kani)]` proofs for `align_up`, size-class `bin_for_size`, padding size, free-list `encode_addr`/`decode_addr`, canary low-byte-zero vs the freed marker, a synthetic page `used + local_len` ghost, and the delayed-free quarantine ring. `vma-core` proves first-fit / coalesce on a fixed-size array twin of the free list (Kani + `BTreeMap` / `Vec` unwind is too heavy). Host `cargo test` covers the same properties with fixed inputs plus the seeded random suite in `chaos.rs`. Kani is not in nixpkgs; the flake packages the official **0.67.0** GitHub release bundle into `nix develop` (`.#kani`). The GitHub `rewrite.yaml` **kani** job uses the official Kani action and fails if proofs fail.
 
 ```
 nix develop          # cargo-kani on PATH (no cargo install)
 cd rust && ./tests/kani.sh
-# or: cargo kani -p mimalloc-core && cargo kani -p vma-core
+# or: cargo kani -p elymalloc-core && cargo kani -p vma-core
 ```
 
 Without the flake shell, install via rustup:
@@ -237,14 +237,14 @@ Proofs stay on pure integer helpers (`addr` / `with_exposed_provenance_mut` for 
 
 ## Benchmarks
 
-Writes `target/malloc-bench/results.csv` plus `ns.svg`, `instructions.svg`, and `index.html` (self-contained grouped bars; no matplotlib/plotters). Allocators: glibc, `rust`, `rust-secure`, `rust-quarantine` (`mimalloc_quarantine=64` KiB; default `rust` stays off), C mimalloc `MI_SECURE=FULL` when cmake works, jemalloc (`JEMALLOC_SO`), and optional `TCMALLOC_SO` / `HARDENED_MALLOC_SO`. Plus `#[global_allocator]` via `mimalloc-bench` (`rust-global`). Reports wall time (`CLOCK_MONOTONIC`) and user-mode instruction counts (`perf_event_open` `PERF_COUNT_HW_INSTRUCTIONS`; 0 if the kernel denies counters). `BENCH_N` divides iteration counts (default `1`).
+Writes `target/malloc-bench/results.csv` plus `ns.svg`, `instructions.svg`, and `index.html` (self-contained grouped bars; no matplotlib/plotters). Allocators: glibc, `rust`, `rust-secure`, `rust-quarantine` (`mimalloc_quarantine=64` KiB; default `rust` stays off), C mimalloc `MI_SECURE=FULL` when cmake works, jemalloc (`JEMALLOC_SO`), and optional `TCMALLOC_SO` / `HARDENED_MALLOC_SO`. Plus `#[global_allocator]` via `elymalloc-bench` (`rust-global`). Reports wall time (`CLOCK_MONOTONIC`) and user-mode instruction counts (`perf_event_open` `PERF_COUNT_HW_INSTRUCTIONS`; 0 if the kernel denies counters). `BENCH_N` divides iteration counts (default `1`).
 
 ```
 cd rust
 ./tests/bench.sh
-# or: cargo run -p mimalloc-harness -- bench
-cargo run --release -p mimalloc-bench
-nix build .#mimalloc   # installs $out/bin/mimalloc-bench
+# or: cargo run -p elymalloc-harness -- bench
+cargo run --release -p elymalloc-bench
+nix build .#mimalloc   # installs $out/bin/elymalloc-bench
 ```
 
 `nix develop` provides `hyperfine`, `perf`, and `cargo-kani` (Kani 0.67.0 release bundle). Set `HYPERFINE=1` to also run hyperfine on the C bench binary for each allocator.

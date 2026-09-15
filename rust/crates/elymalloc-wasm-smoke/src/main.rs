@@ -1,0 +1,45 @@
+//! Host/WASI entry uses std. `wasm32-unknown-unknown` is `no_std` + exported `smoke`.
+#![cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), no_std, no_main)]
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    core::arch::wasm32::unreachable()
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[no_mangle]
+pub extern "C" fn smoke() -> i32 {
+    elymalloc_wasm_smoke::run()
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[no_mangle]
+pub extern "C" fn stress() -> i32 {
+    elymalloc_wasm_smoke::run_stress()
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+#[no_mangle]
+pub extern "C" fn _start() {
+    if elymalloc_wasm_smoke::run() != 0 {
+        core::arch::wasm32::unreachable();
+    }
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+fn main() {
+    let rc = elymalloc_wasm_smoke::run();
+    if rc != 0 {
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("elymalloc-wasm-smoke failed: {rc}");
+        std::process::exit(rc);
+    }
+    let rc = elymalloc_wasm_smoke::run_stress();
+    if rc != 0 {
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("elymalloc-wasm-smoke stress failed: {rc}");
+        std::process::exit(rc);
+    }
+    println!("elymalloc-wasm-smoke ok");
+}

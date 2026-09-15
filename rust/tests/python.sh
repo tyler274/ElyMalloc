@@ -16,5 +16,5 @@ if [[ -z "${PYTHON3:-${PYTHON:-}}" ]] && ! command -v python3 >/dev/null 2>&1; t
 fi
 
 cd rust
-echo "==> cargo run -p mimalloc-harness -- python"
-exec cargo run -q -p mimalloc-harness -- python "$@"
+echo "==> cargo run -p elymalloc-harness -- python"
+exec cargo run -q -p elymalloc-harness -- python "$@"

@@ -25,5 +25,5 @@ if [[ -z "${CHROMIUM:-}" ]] && ! command -v chromium >/dev/null 2>&1 && ! comman
 fi
 
 cd rust
-echo "==> cargo run -p mimalloc-harness -- browsers"
-exec cargo run -q -p mimalloc-harness -- browsers "$@"
+echo "==> cargo run -p elymalloc-harness -- browsers"
+exec cargo run -q -p elymalloc-harness -- browsers "$@"

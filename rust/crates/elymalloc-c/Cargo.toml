@@ -1,0 +1,21 @@
+[package]
+name = "elymalloc-c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI libc malloc override (libmimalloc.so.3 / libmimalloc-secure.so.3)"
+
+[features]
+default = []
+debug-fill = ["elymalloc-core/debug-fill"]
+# SONAME `libmimalloc-secure.so.3` (C `-DMI_SECURE=ON` / `FULL`). Mitigations
+# are always on; this only matches the secure shared-library name.
+secure = []
+
+[dependencies]
+elymalloc-core = { path = "../elymalloc-core" }
+libc.workspace = true
+
+[lib]
+name = "mimalloc"
+crate-type = ["cdylib", "staticlib"]

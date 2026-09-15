@@ -1,0 +1,27 @@
+[package]
+name = "elymalloc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ElyMalloc no_std core (drop-in for mimalloc v3.5.2; always-on MI_SECURE mitigations)"
+
+[features]
+default = []
+debug-fill = []
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+] }
+
+[lib]
+name = "elymalloc_core"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

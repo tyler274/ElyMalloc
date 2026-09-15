@@ -12,5 +12,5 @@ if command -v nix >/dev/null 2>&1; then
 fi
 
 cd rust
-echo "==> cargo run -p mimalloc-harness -- world"
-exec cargo run -q -p mimalloc-harness -- world "$@"
+echo "==> cargo run -p elymalloc-harness -- world"
+exec cargo run -q -p elymalloc-harness -- world "$@"

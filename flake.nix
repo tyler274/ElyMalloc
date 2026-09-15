@@ -1,5 +1,5 @@
 {
-  description = "Pure-Rust mimalloc rewrite with a C ABI drop-in";
+  description = "ElyMalloc: pure-Rust mimalloc rewrite with a C ABI drop-in";
 
   # Consumers: use `git+file:///abs/path` or github:, not `path:/…`. A path
   # input copies gitignored `rust/target` into the Nix store (~4GiB/update).
@@ -161,6 +161,7 @@
             echo ok > $out/ok
           '';
         world-preload = self.packages.${system}.world-preload;
+        nixos-malloc = self.packages.${system}.nixos-malloc;
         vma = self.packages.${system}.vma;
       });
 
