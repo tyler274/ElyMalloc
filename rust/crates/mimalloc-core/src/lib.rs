@@ -1,6 +1,6 @@
 //! Pure-Rust mimalloc core (`no_std`, no `alloc` crate).
 //!
-//! Drop-in for C mimalloc **v3.5.1**: same size classes, page sizes, padding,
+//! Drop-in for C mimalloc **v3.5.2**: same size classes, page sizes, padding,
 //! and `mi_*` semantics. Security mitigations that C gates behind `MI_SECURE`
 //! (encoded free lists, guard pages, overflow/double-free checks) are always on.
 //!
@@ -97,6 +97,7 @@ pub mod options;
 mod os;
 mod page;
 mod page_map;
+mod profile;
 mod ptrx;
 mod quarantine;
 mod spin;
@@ -132,8 +133,8 @@ pub const MAX_ALLOC: usize = isize::MAX as usize;
 pub const MAX_ALIGN_SIZE: usize = 16;
 /// 8-byte `{canary, delta}` trailer at the end of every block (C `MI_PADDING`).
 pub const PADDING_SIZE: usize = 8;
-/// Packed as `major*10000 + minor*100 + patch` (C `MI_MALLOC_VERSION` for 3.5.1).
-pub const MI_MALLOC_VERSION: i32 = 30501;
+/// Packed as `major*10000 + minor*100 + patch` (C `MI_MALLOC_VERSION` for 3.5.2).
+pub const MI_MALLOC_VERSION: i32 = 30502;
 
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 static INIT_LOCK: spin::SpinLock = spin::SpinLock::new();
@@ -177,6 +178,11 @@ pub fn init() {
     tls::BOOTSTRAP_TID.store(0, Ordering::Release);
     tls::INIT_OWNER.store(0, Ordering::Release);
     INIT_DONE.store(true, Ordering::Release);
+    drop(_g);
+    // Bind the process-init theap to the thread-done TLS key (C #1393).
+    unsafe {
+        let _ = tls::thread_heap();
+    }
 }
 
 /// Child after `fork`: locks may have been held by threads that do not exist here.
@@ -196,7 +202,8 @@ pub use alloc::{
     good_size, malloc, malloc_aligned, malloc_aligned_at, manage_os_memory_ex, memalign,
     posix_memalign, pvalloc, realloc, reallocarr, reallocarray, reallocf, realpath,
     reserve_os_memory, reserve_os_memory_ex, rezalloc, rezalloc_aligned, rezalloc_aligned_at,
-    strdup, strndup, ufree, umalloc, urealloc, usable_size, valloc, VERSION,
+    strdup, strndup, ufree, umalloc, urealloc, usable_size, valloc, wmalloc_small, wzalloc_small,
+    VERSION,
 };
 pub use arena::{self as mi_arena, Arena};
 pub use global::Mimalloc;
@@ -208,9 +215,14 @@ pub use heap::{
     page_is_under_utilized, stats_merge, theap_collect, theap_get_default,
     theap_guarded_set_sample_rate, theap_guarded_set_size_bound, theap_malloc,
     theap_malloc_aligned, theap_malloc_aligned_at, theap_set_default, theap_set_in_threadpool,
-    theap_stats_get, theap_visit_blocks, BlockVisitFun, Heap, HeapArea, Theap,
+    theap_stats_get, theap_stats_merge_to_heap, theap_visit_blocks, theap_wmalloc_small,
+    theap_wzalloc_small, BlockVisitFun, Heap, HeapArea, Theap,
 };
 pub use options as mi_options;
+pub use profile::{
+    heap_profile, heap_profile_disable, profile as attach_profile, profiler_start, profiler_stop,
+    subproc_profile, Profiler, ProfilerSampleData,
+};
 pub use stats::{self as mi_stats, Stats};
 pub use subproc::{self as mi_subproc, Subproc, SubprocId};
 pub use tls::thread_done;
@@ -243,9 +255,9 @@ mod tests {
     }
 
     #[test]
-    fn version_matches_c_3_5_1() {
-        assert_eq!(super::MI_MALLOC_VERSION, 30501);
-        assert_eq!(alloc::VERSION, 30501);
+    fn version_matches_c_3_5_2() {
+        assert_eq!(super::MI_MALLOC_VERSION, 30502);
+        assert_eq!(alloc::VERSION, 30502);
     }
 
     #[test]
@@ -749,7 +761,8 @@ mod tests {
             assert!(s.mmap_calls.total >= 1);
             assert!(s.reserved.current > 0);
             assert!(s.committed.current > 0);
-            assert!(s.malloc_requested.current > 0);
+            assert!(s.malloc_normal.current > 0);
+            assert!(s.malloc_requested.total > 0);
             alloc::free(p);
         }
     }
@@ -766,7 +779,7 @@ mod tests {
             let mut hs: crate::Stats = core::mem::zeroed();
             assert!(crate::heap_stats_get(h, &mut hs));
             assert!(hs.malloc_normal_count.total >= 8);
-            assert!(hs.malloc_requested.current > 0);
+            assert!(hs.malloc_normal.current > 0);
             let t = crate::heap_theap(h);
             let mut ts: crate::Stats = core::mem::zeroed();
             assert!(crate::theap_stats_get(t, &mut ts));
@@ -894,7 +907,8 @@ mod tests {
             let p = alloc::malloc(64);
             assert!(!p.is_null());
             alloc::free(p.add(8));
-            assert_eq!(alloc::usable_size(p.add(8)), 0);
+            let rem = alloc::usable_size(p.add(8));
+            assert!(rem > 0 && rem < 64);
             core::ptr::write_bytes(p, 0xAB, 64);
             alloc::free(p);
         }
@@ -1022,10 +1036,10 @@ mod tests {
             assert!(!p.is_null());
             let mut st = core::mem::zeroed();
             assert!(crate::theap_stats_get(crate::heap_theap(h), &mut st));
-            assert!(st.malloc_requested.current > 0);
+            assert!(st.malloc_normal.current > 0);
             crate::heap_stats_merge_to_subproc(h);
             assert!(crate::theap_stats_get(crate::heap_theap(h), &mut st));
-            assert_eq!(st.malloc_requested.current, 0);
+            assert_eq!(st.malloc_normal.current, 0);
             crate::stats_merge();
             crate::heap_destroy(h);
         }
@@ -1276,6 +1290,115 @@ mod tests {
             assert_ne!(q as usize, addr);
             alloc::free(q);
             alloc::collect(true);
+        }
+    }
+
+    #[test]
+    fn wmalloc_small_uses_word_size() {
+        unsafe {
+            let p = alloc::wmalloc_small(4);
+            assert!(!p.is_null());
+            assert!(alloc::usable_size(p as *const u8) >= 4 * crate::PTR_SIZE);
+            alloc::free(p);
+            let z = alloc::wzalloc_small(2);
+            assert!(!z.is_null());
+            assert_eq!(*z, 0);
+            assert_eq!(*z.add(crate::PTR_SIZE), 0);
+            alloc::free(z);
+        }
+    }
+
+    #[test]
+    fn usable_size_on_aligned_interior() {
+        unsafe {
+            let p = alloc::malloc_aligned(64, 64);
+            assert!(!p.is_null());
+            assert_eq!(p as usize % 64, 0);
+            let full = alloc::usable_size(p as *const u8);
+            assert!(full >= 64);
+            let rem = alloc::usable_size(p.add(16) as *const u8);
+            assert_eq!(rem, full - 16);
+            alloc::free(p);
+        }
+    }
+
+    #[test]
+    fn theap_stats_merge_to_heap_clears_theap() {
+        unsafe {
+            let h = crate::heap_new();
+            let p = crate::heap_malloc(h, 64);
+            assert!(!p.is_null());
+            let th = crate::heap_theap(h);
+            let mut ts: crate::Stats = core::mem::zeroed();
+            assert!(crate::theap_stats_get(th, &mut ts));
+            assert!(ts.malloc_normal.current > 0);
+            crate::theap_stats_merge_to_heap(th);
+            assert!(crate::theap_stats_get(th, &mut ts));
+            assert_eq!(ts.malloc_normal.current, 0);
+            let mut hs: crate::Stats = core::mem::zeroed();
+            assert!(crate::heap_stats_get(h, &mut hs));
+            assert!(hs.malloc_normal.current > 0);
+            crate::heap_destroy(h);
+        }
+    }
+
+    #[test]
+    fn profiler_start_stop_one_sample() {
+        unsafe {
+            static mut ALLOCS: u64 = 0;
+            static mut FREES: u64 = 0;
+            static mut PROF: crate::Profiler = crate::Profiler {
+                reserved: 0,
+                sample_data_size: 0,
+                initial_sample_rate: 1,
+                on_alloc: None,
+                on_free: None,
+                on_realloc_inplace: None,
+            };
+            unsafe extern "C" fn on_alloc(
+                _p: *mut crate::Profiler,
+                data: *mut crate::ProfilerSampleData,
+                ptr: *mut u8,
+                size: usize,
+                _rate: usize,
+                since: u64,
+                _heap: *const crate::Heap,
+            ) -> usize {
+                ALLOCS += 1;
+                if !data.is_null() && (*data).user_data_size >= core::mem::size_of::<*mut u8>() {
+                    (*data).user_data[0] = ptr;
+                }
+                assert!(since >= size as u64);
+                4096
+            }
+            unsafe extern "C" fn on_free(
+                _p: *mut crate::Profiler,
+                _data: *mut crate::ProfilerSampleData,
+                _ptr: *mut u8,
+                _heap: *const crate::Heap,
+            ) {
+                FREES += 1;
+            }
+            PROF.sample_data_size = core::mem::size_of::<*mut u8>();
+            PROF.initial_sample_rate = 1;
+            PROF.on_alloc = Some(on_alloc);
+            PROF.on_free = Some(on_free);
+            assert!(crate::attach_profile(core::ptr::addr_of_mut!(PROF)));
+            crate::profiler_start(core::ptr::addr_of_mut!(PROF));
+            let mut last: *mut u8 = core::ptr::null_mut();
+            for _ in 0..64 {
+                if !last.is_null() {
+                    alloc::free(last);
+                }
+                last = alloc::malloc(1024);
+            }
+            assert!(ALLOCS >= 1);
+            if !last.is_null() {
+                alloc::free(last);
+            }
+            assert!(FREES >= 1);
+            crate::profiler_stop(core::ptr::addr_of_mut!(PROF));
+            let _ = crate::attach_profile(core::ptr::null_mut());
         }
     }
 }

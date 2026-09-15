@@ -134,7 +134,7 @@ int main(void) {
   }
 
   {
-    if (mi_version() != MI_MALLOC_VERSION || mi_version() != 30501) die("mi_version");
+    if (mi_version() != MI_MALLOC_VERSION || mi_version() != 30502) die("mi_version");
     mi_theap_t* theap = mi_theap_get_default();
     size_t zsize = MI_SMALL_SIZE_MAX + 64;
     uint8_t* junk = (uint8_t*)mi_theap_malloc(theap, zsize);

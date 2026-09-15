@@ -146,8 +146,22 @@ impl Drop for Mapping {
 }
 
 /// `MADV_DONTNEED` / Apple reusable / no-op on wasm. Size 0 or null is a no-op.
+/// Page-aligns conservatively *inside* the range so we never reset off the mapping
+/// (C `_mi_os_reset` / v3.5.2 huge-page reset clamp).
 pub unsafe fn purge(p: *mut u8, size: usize) {
-    madvise_dontneed(p, size);
+    if p.is_null() || size == 0 {
+        return;
+    }
+    let os = page_size();
+    if os == 0 {
+        return;
+    }
+    let start = crate::align_up(p as usize, os);
+    let end = (p as usize).saturating_add(size) & !(os - 1);
+    if end <= start {
+        return;
+    }
+    madvise_dontneed(start as *mut u8, end - start);
 }
 
 /// C `_mi_os_minimal_purge_size`. `allow_thp==2` (FULL) uses 2 MiB so

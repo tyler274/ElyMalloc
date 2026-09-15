@@ -157,6 +157,16 @@ pub unsafe extern "C" fn mi_zalloc_small(size: usize) -> *mut c_void {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mi_wmalloc_small(wsize: usize) -> *mut c_void {
+    pvoid(mi::wmalloc_small(wsize))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_wzalloc_small(wsize: usize) -> *mut c_void {
+    pvoid(mi::wzalloc_small(wsize))
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mi_zalloc(size: usize) -> *mut c_void {
     pvoid(mi::calloc(1, size))
 }
@@ -896,6 +906,22 @@ pub unsafe extern "C" fn mi_theap_zalloc_small(
     size: usize,
 ) -> *mut c_void {
     mi_theap_zalloc(theap, size)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_theap_wmalloc_small(
+    theap: *mut mimalloc_core::Theap,
+    wsize: usize,
+) -> *mut c_void {
+    pvoid(mimalloc_core::theap_wmalloc_small(theap, wsize))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_theap_wzalloc_small(
+    theap: *mut mimalloc_core::Theap,
+    wsize: usize,
+) -> *mut c_void {
+    pvoid(mimalloc_core::theap_wzalloc_small(theap, wsize))
 }
 
 #[no_mangle]
@@ -1733,8 +1759,8 @@ unsafe fn print_stats(stats: &mimalloc_core::Stats, out: *mut c_void, arg: *mut 
         stats.pages.current as libc::c_longlong,
         stats.pages.peak as libc::c_longlong,
         stats.pages.total as libc::c_longlong,
-        stats.malloc_requested.current as libc::c_longlong,
-        stats.malloc_requested.peak as libc::c_longlong,
+        stats.malloc_normal.current as libc::c_longlong,
+        stats.malloc_normal.peak as libc::c_longlong,
         stats.malloc_normal_count.total as libc::c_longlong,
     );
     emit_cstr(out, arg, buf.as_ptr());
@@ -2070,6 +2096,11 @@ pub unsafe extern "C" fn mi_theap_stats_get(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mi_theap_stats_merge_to_heap(theap: *mut mimalloc_core::Theap) {
+    mimalloc_core::theap_stats_merge_to_heap(theap);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mi_subproc_stats_get(
     subproc: mimalloc_core::SubprocId,
     stats: *mut mimalloc_core::Stats,
@@ -2196,6 +2227,42 @@ pub unsafe extern "C" fn mi_subproc_heap_stats_print_out(
     arg: *mut c_void,
 ) {
     mi_stats_print_out(out, arg);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_profile(
+    heap: *mut mimalloc_core::Heap,
+    profiler: *mut mimalloc_core::Profiler,
+) -> bool {
+    mimalloc_core::heap_profile(heap, profiler)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_heap_profile_disable(heap: *mut mimalloc_core::Heap) {
+    mimalloc_core::heap_profile_disable(heap);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_subproc_profile(
+    subproc: mimalloc_core::SubprocId,
+    profiler: *mut mimalloc_core::Profiler,
+) -> bool {
+    mimalloc_core::subproc_profile(subproc, profiler)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_profile(profiler: *mut mimalloc_core::Profiler) -> bool {
+    mimalloc_core::attach_profile(profiler)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_profiler_start(profiler: *mut mimalloc_core::Profiler) -> bool {
+    mimalloc_core::profiler_start(profiler)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mi_profiler_stop(profiler: *mut mimalloc_core::Profiler) -> bool {
+    mimalloc_core::profiler_stop(profiler)
 }
 
 // ---------------------------------------------------------------------------

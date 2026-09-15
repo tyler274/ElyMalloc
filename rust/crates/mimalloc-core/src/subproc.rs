@@ -19,6 +19,7 @@ pub struct Subproc {
     pub magic: u32,
     pub next_meta: *mut Subproc,
     pub stats: AllocStats,
+    pub profiler: core::sync::atomic::AtomicPtr<crate::profile::Profiler>,
 }
 
 /// Opaque id matching C `mi_subproc_id_t` (a pointer).
