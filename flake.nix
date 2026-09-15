@@ -49,6 +49,18 @@
           rustc = rust;
           cargo = rust;
         };
+      # Dual-SONAME preload (Cyrene's `/etc/ld-nix.so.preload`). Overlay is
+      # applied by `nixosModules.default` on a host, or by this flake's `pkgs`
+      # in `runNixOSTest` (where `nixpkgs.overlays` is read-only).
+      memoryAllocatorPreload =
+        { lib, pkgs, ... }:
+        {
+          environment.memoryAllocator.provider = lib.mkDefault "mimalloc";
+          environment.etc."ld-nix.so.preload".text = lib.mkForce ''
+            ${pkgs.mimalloc}/lib/libmimalloc.so
+            ${pkgs.mimalloc}/lib/libmimalloc-secure.so.3
+          '';
+        };
     in
     {
       overlays.default = final: prev: {
@@ -94,40 +106,37 @@
           browsers-preload = pkgs.callPackage ./rust/browsers.nix { mimalloc = mimallocUnchecked; };
           live = pkgs.callPackage ./rust/live.nix { mimalloc = mimallocUnchecked; };
           vma = pkgs.callPackage ./rust/vma.nix { };
-          nixos-malloc = pkgs.testers.runNixOSTest {
-            name = "mimalloc-memory-allocator";
-            nodes.machine =
-              { pkgs, ... }:
-              {
-                imports = [ self.nixosModules.memoryAllocator ];
-                nixpkgs.overlays = [
-                  (final: prev: {
-                    mimalloc = prev.mimalloc.overrideAttrs (_: {
-                      doCheck = false;
-                    });
-                  })
-                ];
-                environment.systemPackages = [
-                  pkgs.hello
-                  pkgs.python3
-                  pkgs.nodejs
-                  pkgs.git
-                  pkgs.gcc
-                ];
-              };
-            testScript = ''
-              machine.wait_for_unit("multi-user.target")
-              machine.succeed("grep -q libmimalloc.so /etc/ld-nix.so.preload")
-              machine.succeed("grep -q libmimalloc-secure.so.3 /etc/ld-nix.so.preload")
-              machine.succeed("hello")
-              machine.succeed("git --version")
-              machine.succeed("python3 -c 'print(sum(range(10000)))'")
-              machine.succeed("node -e 'console.log(\"node-ok\", Buffer.alloc(64).length)'")
-              machine.succeed(
-                  "echo 'int main(void){return 0;}' > /tmp/t.c && gcc /tmp/t.c -o /tmp/t && /tmp/t"
-              )
-            '';
-          };
+          nixos-malloc =
+            let
+              testPkgs = pkgs.extend (_: _: { mimalloc = mimallocUnchecked; });
+            in
+            testPkgs.testers.runNixOSTest {
+              name = "mimalloc-memory-allocator";
+              nodes.machine =
+                { pkgs, ... }:
+                {
+                  imports = [ memoryAllocatorPreload ];
+                  environment.systemPackages = [
+                    pkgs.hello
+                    pkgs.python3
+                    pkgs.nodejs
+                    pkgs.git
+                    pkgs.gcc
+                  ];
+                };
+              testScript = ''
+                machine.wait_for_unit("multi-user.target")
+                machine.succeed("grep -q libmimalloc.so /etc/ld-nix.so.preload")
+                machine.succeed("grep -q libmimalloc-secure.so.3 /etc/ld-nix.so.preload")
+                machine.succeed("hello")
+                machine.succeed("git --version")
+                machine.succeed("python3 -c 'print(sum(range(10000)))'")
+                machine.succeed("node -e 'console.log(\"node-ok\", Buffer.alloc(64).length)'")
+                machine.succeed(
+                    "echo 'int main(void){return 0;}' > /tmp/t.c && gcc /tmp/t.c -o /tmp/t && /tmp/t"
+                )
+              '';
+            };
         }
       );
 
@@ -216,18 +225,11 @@
       # Overlay plus `environment.memoryAllocator.provider = "mimalloc"`.
       # On a host that already uses C mimalloc, this replaces `pkgs.mimalloc`
       # so /etc/ld-nix.so.preload points at the rewrite (always-on secure).
-      nixosModules.memoryAllocator =
-        { lib, pkgs, ... }:
-        {
-          imports = [ self.nixosModules.default ];
-          environment.memoryAllocator.provider = lib.mkDefault "mimalloc";
-          # NixOS writes only libmimalloc.so. Also preload the secure SONAME so
-          # DT_NEEDED libmimalloc-secure.so.3 (nixpkgs mold) binds this rewrite
-          # instead of C mimalloc via RUNPATH.
-          environment.etc."ld-nix.so.preload".text = lib.mkForce ''
-            ${pkgs.mimalloc}/lib/libmimalloc.so
-            ${pkgs.mimalloc}/lib/libmimalloc-secure.so.3
-          '';
-        };
+      nixosModules.memoryAllocator = {
+        imports = [
+          self.nixosModules.default
+          memoryAllocatorPreload
+        ];
+      };
     };
 }
