@@ -1,7 +1,8 @@
 //! LLVM PGO: train instrumented ElyMalloc, or run generate/train/merge/use.
 //!
 //! `pgo-train` runs the same workloads as the old shell driver: `elymalloc-bench`,
-//! `elymalloc-alloc-stress`, and `tests/{smoke,bench,chaos}.c` under `LD_PRELOAD`.
+//! `elymalloc-alloc-stress`, `tests/{smoke,bench}.c` under `LD_PRELOAD`, and
+//! `chaos.c` **linked** against the cdylib (`mi_*` are not libc intercepts).
 //! The caller must set `LLVM_PROFILE_FILE`. `pgo` locates `llvm-profdata`,
 //! builds instrumented crates, trains, merges, and rebuilds with `-Cprofile-use`.
 
@@ -184,16 +185,65 @@ fn preload_env(so: &Path) -> (&'static str, OsString) {
     }
 }
 
+fn lib_dir_env(so: &Path) -> (&'static str, OsString) {
+    let dir = so.parent().unwrap_or(so);
+    #[cfg(target_os = "macos")]
+    {
+        (
+            "DYLD_LIBRARY_PATH",
+            stack_preload(dir, std::env::var_os("DYLD_LIBRARY_PATH").as_deref()),
+        )
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        (
+            "LD_LIBRARY_PATH",
+            stack_preload(dir, std::env::var_os("LD_LIBRARY_PATH").as_deref()),
+        )
+    }
+    #[cfg(windows)]
+    {
+        (
+            "PATH",
+            stack_preload(dir, std::env::var_os("PATH").as_deref()),
+        )
+    }
+}
+
 fn run_so(so: &Path, bin: &Path, extra: &[(&str, OsString)]) -> Result<()> {
     if !so.is_file() {
         eprintln!("pgo-train: skip missing {}", so.display());
         return Ok(());
     }
     let preload = preload_env(so);
-    let mut env: Vec<(&str, OsString)> = Vec::with_capacity(extra.len() + 1);
+    let lpath = lib_dir_env(so);
+    let mut env: Vec<(&str, OsString)> = Vec::with_capacity(extra.len() + 2);
     env.push(preload);
+    env.push(lpath);
     env.extend(extra.iter().cloned());
     run_ok(bin, &[], &env)
+}
+
+/// `chaos.c` includes `mimalloc.h` and calls `mi_*` (unlike smoke/bench, which
+/// use libc `malloc` under `LD_PRELOAD`). Link the cdylib the same way `c-abi` does.
+fn compile_chaos(cc: &Path, include: &Path, src: &Path, so: &Path, out: &Path) -> Result<()> {
+    let inc = format!("-I{}", include.display());
+    let rpath = format!(
+        "-Wl,-rpath,{}",
+        so.parent().unwrap_or(so).display()
+    );
+    compile(
+        cc,
+        &[
+            "-O2",
+            "-pthread",
+            &inc,
+            &rpath,
+            utf8(src)?,
+            utf8(so)?,
+        ],
+        out,
+    )
 }
 
 fn chaos_steps(default: &str) -> OsString {
@@ -290,21 +340,18 @@ pub fn train(args: TrainArgs) -> Result<()> {
     let chaos_src = c_tests.join("chaos.c");
     if include.is_dir() && chaos_src.is_file() {
         let chaos_bin = tmp.join("pgo-chaos");
-        let inc = format!("-I{}", include.display());
-        compile(
-            &cc,
-            &["-O2", "-pthread", &inc, utf8(&chaos_src)?],
-            &chaos_bin,
-        )?;
+        compile_chaos(&cc, &include, &chaos_src, &so, &chaos_bin)?;
         run_so(
             &so,
             &chaos_bin,
             &[("MIMALLOC_CHAOS_STEPS", chaos_steps("8192"))],
         )?;
         if let Some(secure) = secure_so.as_ref().filter(|p| p.is_file()) {
+            let chaos_sec = tmp.join("pgo-chaos-secure");
+            compile_chaos(&cc, &include, &chaos_src, secure, &chaos_sec)?;
             run_so(
                 secure,
-                &chaos_bin,
+                &chaos_sec,
                 &[("MIMALLOC_CHAOS_STEPS", chaos_steps("4096"))],
             )?;
         }
@@ -484,5 +531,12 @@ mod tests {
     #[test]
     fn train_without_so_is_ok() {
         train(TrainArgs::default()).unwrap();
+    }
+
+    #[test]
+    fn chaos_rpath_points_at_so_dir() {
+        let so = Path::new("/build/pgo-gen/release/libmimalloc.so");
+        let rpath = format!("-Wl,-rpath,{}", so.parent().unwrap().display());
+        assert_eq!(rpath, "-Wl,-rpath,/build/pgo-gen/release");
     }
 }
